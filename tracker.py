@@ -1913,7 +1913,7 @@ class VideoPipeline(threading.Thread):
 
 def parse_args(argv=None):
     """Parse CLI flags; all values override the corresponding INI settings."""
-    p = argparse.ArgumentParser(description="Center Stage for a webcam")
+    p = argparse.ArgumentParser(description="Hyper Stage for a webcam")
     p.add_argument("--config", help="path to INI config file")
     p.add_argument("--camera", type=int, help="camera index override")
     p.add_argument("--lut", help="path to a .cube 3D LUT (overrides ini)")
