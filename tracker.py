@@ -1074,7 +1074,11 @@ class MultiShader:
         height, width = frame_bgr.shape[:2]
         if not self._ensure_size(width, height):
             return frame_bgr
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        # Same boundary flips as the single-file path: upload flipped so the
+        # camera texture reads like a Shadertoy asset (t=0 at image bottom),
+        # final read flipped back to top-down. Internal buffer passes render
+        # and sample with the same uv mapping, so they need no flips.
+        rgb = cv2.cvtColor(cv2.flip(frame_bgr, 0), cv2.COLOR_BGR2RGB)
         self._camera.write(rgb)
         source = self._camera
         for i, (program, quad) in enumerate(self._passes):
@@ -1096,9 +1100,10 @@ class MultiShader:
         output_fbo.use()
         quad.render(moderngl.TRIANGLE_STRIP)
         data = output_fbo.read(components=3, alignment=1)
-        # read() returns rows bottom-up like the render, so the row order
-        # already matches the camera frame.
-        rgb_out = np.frombuffer(data, dtype=np.uint8).reshape(height, width, 3)
+        # Undo the bottom-up GL readback (see the upload flip above).
+        rgb_out = cv2.flip(
+            np.frombuffer(data, dtype=np.uint8).reshape(height, width, 3), 0
+        )
         return cv2.cvtColor(rgb_out, cv2.COLOR_RGB2BGR)
 
 
@@ -1243,7 +1248,12 @@ class ShaderEngine:
             return frame_bgr
         program, quad, channels = entry
 
-        self._texture.write(frame_bgr)
+        # GL's fragment origin is bottom-up (fragCoord.y = 0 at the bottom,
+        # like Shadertoy's display). Flipping at BOTH boundaries - upload and
+        # readback - keeps uv-sampling shaders pixel-exact (the two flips
+        # cancel) while giving screen-space shaders Shadertoy's y-up
+        # orientation relative to the published top-down frame.
+        self._texture.write(cv2.flip(frame_bgr, 0))
         for unit, name in (
             (0, channels.get(0, "camera")),
             (1, channels.get(1, "noise")),
@@ -1267,9 +1277,10 @@ class ShaderEngine:
         self._fbo.use()
         quad.render(moderngl.TRIANGLE_STRIP)
         data = self._fbo.read(components=3, alignment=1)
-        # The GL render is bottom-up but read() returns rows bottom-up as
-        # well, so the data is already in the camera frame's top-down order.
-        return np.frombuffer(data, dtype=np.uint8).reshape(height, width, 3)
+        # Undo the bottom-up GL readback (see the upload flip above).
+        return cv2.flip(
+            np.frombuffer(data, dtype=np.uint8).reshape(height, width, 3), 0
+        )
 
     def _apply_multi(self, frame_bgr, path):
         """Run a multibuffer pack folder; input frame passes through if broken."""

@@ -562,6 +562,51 @@ class TestShaderEngine(unittest.TestCase):
             tracker.ShaderEngine.parse_channels("void mainImage() {}"), {}
         )
 
+    def test_screen_space_shaders_get_shadertoy_y_up_orientation(self):
+        """fragCoord.y > H/2 must land in the published TOP half.
+
+        Shadertoy displays fragCoord.y = 0 at the bottom; without the
+        boundary flips the raymarched scene in meta-crt.glsl appeared
+        upside down. Camera sampling must stay pixel-exact meanwhile.
+        """
+        import os
+        import tempfile
+
+        import numpy as np
+
+        screen = """
+        void mainImage(out vec4 c, in vec2 p) {
+            c = (p.y > iResolution.y * 0.5) ? vec4(1.0, 0.0, 0.0, 1.0)
+                                            : vec4(0.0, 0.0, 1.0, 1.0);
+        }
+        """
+        camera = """
+        void mainImage(out vec4 c, in vec2 p) {
+            c = vec4(texture(iChannel0, p / iResolution.xy).rgb, 1.0);
+        }
+        """
+        engine = tracker.ShaderEngine()
+        frame = np.zeros((60, 80, 3), dtype=np.uint8)
+        frame[5, 40] = (7, 8, 9)  # asymmetric marker near the top
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                screen_path = self._write(folder, "screen.glsl", screen)
+                out = engine.apply(frame, screen_path)
+                camera_path = self._write(folder, "camera.glsl", camera)
+                cam_out = engine.apply(frame, camera_path)
+        except Exception:
+            self.skipTest("no usable GPU context in this environment")
+        finally:
+            if engine._ctx is not None:
+                engine._ctx.release()
+        # Screen space: red (y > H/2) on the published top half.
+        self.assertEqual(int(out[10, 40, 0]), 255)
+        self.assertEqual(int(out[10, 40, 2]), 0)
+        self.assertEqual(int(out[50, 40, 2]), 255)
+        self.assertEqual(int(out[50, 40, 0]), 0)
+        # Camera sampling: still pixel-exact, no flip.
+        self.assertTrue((cam_out == frame).all())
+
     def test_multibuffer_pack_runs_passes_with_feedback(self):
         """A <name>.glsl folder runs Common + buffers + Image as one pack."""
         import os
