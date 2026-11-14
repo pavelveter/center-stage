@@ -77,31 +77,35 @@ class CenterStageApp(App):
         layout: vertical;
     }
     #left {
-        width: 47;
-        height: 1fr;
-    }
-    #body.compact #left {
-        width: 1fr;
-        height: auto;
-    }
-    #controls {
         width: 1fr;
         height: 1fr;
     }
-    #body.compact #controls {
+    #right {
         width: 1fr;
+        height: 1fr;
     }
-    .section {
+    #body.compact #left,
+    #body.compact #right {
         height: auto;
+    }
+    .sidebar {
+        height: 1fr;
         border: round $primary;
         padding: 0 1 1 1;
-        margin-bottom: 1;
     }
-    .section .panel-title {
-        margin-top: 0;
+    #body.compact .sidebar {
+        height: auto;
     }
     .panel-title {
         color: $accent;
+        text-style: bold;
+        margin-top: 1;
+    }
+    .panel-title.first {
+        margin-top: 0;
+    }
+    .sub-title {
+        color: $text-muted;
         text-style: bold;
         margin-top: 1;
     }
@@ -169,46 +173,43 @@ class CenterStageApp(App):
         values = self.state.snapshot()
         yield Header()
         with Horizontal(id="body"):
-            with Vertical(id="left"):
-                with Vertical(classes="section"):
-                    yield Static("TELEMETRY", classes="panel-title")
-                    yield Static(id="telemetry-body")
-                    yield Static("starting", id="notice", classes="notice")
-                    yield Static("TUNING", classes="panel-title")
-                    yield from self.tuning_row("zoom", values)
-                    yield from self.tuning_row("smoothing", values)
-            with VerticalScroll(id="controls"):
-                # LUT grading grouped with its file list and scale control.
-                with Vertical(classes="section", id="lut-section"):
-                    with Horizontal(classes="row"):
-                        yield Label("LUT grading", classes="name")
-                        yield Switch(
-                            value=bool(values["lut_enabled"]), id="sw-lut"
-                        )
-                    yield OptionList(
-                        *[
-                            Option(os.path.basename(path), id=path)
-                            for path in self.lut_files
-                        ],
-                        id="luts",
+            with Vertical(classes="sidebar", id="left"):
+                yield Static("TELEMETRY", classes="panel-title first")
+                yield Static(id="telemetry-body")
+                yield Static("starting", id="notice", classes="notice")
+                yield Static("TUNING", classes="sub-title")
+                yield from self.tuning_row("zoom", values)
+                yield from self.tuning_row("smoothing", values)
+            with VerticalScroll(classes="sidebar", id="right"):
+                yield Static(
+                    "IMAGE PROCESSING & FEATURES", classes="panel-title first"
+                )
+                yield Static("LUT", classes="sub-title")
+                with Horizontal(classes="row"):
+                    yield Label("LUT grading", classes="name")
+                    yield Switch(value=bool(values["lut_enabled"]), id="sw-lut")
+                yield OptionList(
+                    *[
+                        Option(os.path.basename(path), id=path)
+                        for path in self.lut_files
+                    ],
+                    id="luts",
+                )
+                yield from self.tuning_row("lutscale", values)
+                yield Static("SHARPEN", classes="sub-title")
+                with Horizontal(classes="row"):
+                    yield Label("Smart sharpen", classes="name")
+                    yield Switch(
+                        value=bool(values["sharpen_enabled"]), id="sw-sharpen"
                     )
-                    yield from self.tuning_row("lutscale", values)
-                # Smart sharpen grouped with its strength control.
-                with Vertical(classes="section", id="sharpen-section"):
+                yield from self.tuning_row("sharpen", values)
+                yield Static("FEATURES", classes="sub-title")
+                for widget_id, (label, key) in SWITCHES.items():
+                    if widget_id in ("sw-lut", "sw-sharpen"):
+                        continue
                     with Horizontal(classes="row"):
-                        yield Label("Smart sharpen", classes="name")
-                        yield Switch(
-                            value=bool(values["sharpen_enabled"]), id="sw-sharpen"
-                        )
-                    yield from self.tuning_row("sharpen", values)
-                with Vertical(classes="section", id="features"):
-                    yield Static("FEATURES", classes="panel-title")
-                    for widget_id, (label, key) in SWITCHES.items():
-                        if widget_id in ("sw-lut", "sw-sharpen"):
-                            continue
-                        with Horizontal(classes="row"):
-                            yield Label(label, classes="name")
-                            yield Switch(value=bool(values[key]), id=widget_id)
+                        yield Label(label, classes="name")
+                        yield Switch(value=bool(values[key]), id=widget_id)
         yield Footer()
 
     def on_mount(self) -> None:

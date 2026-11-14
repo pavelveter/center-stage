@@ -32,21 +32,25 @@ the footer key hints. Tuning fields accept a typed value on `Enter`.
 
 ## Panels
 
-- **Telemetry** - measured FPS, current zoom, `TRACKING`/`IDLE` face status, the
-  active virtual-camera device, and the pipeline status.
-- **Tuning** - live `zoom` and `smoothing`, below the telemetry counters.
-- **LUT** - a bordered group holding the grading switch, the `.cube` file list
-  (every file found in `LUT/` and the working directory at startup, capped at
-  six visible rows), and the `lut_scale` tuner. Switching grading off dims and
-  disables the list and the scale control.
-- **Smart sharpen** - the sharpening switch with its `sharpen_strength` tuner;
-  the tuner is disabled while sharpening is off.
-- **Features** - switches for face tracking, the time loop (30-frame ring
-  buffer replayed as a seamless loop), and the deep-fry effect (boosted
-  saturation/contrast with an RGB channel roll).
+The screen is a two-column layout of two bordered panels of equal height:
 
-Selecting a `.cube` file bakes its 128^3 lookup table in a background worker,
-so the video stream never stalls.
+- **Left: TELEMETRY / TUNING** - measured FPS, current zoom, `TRACKING`/`IDLE`
+  face status, the active virtual-camera device, the pipeline status, and the
+  live `zoom` and `smoothing` tuners.
+- **Right: IMAGE PROCESSING & FEATURES** - one sidebar with three sub-blocks:
+  - *LUT* - the grading switch, the `.cube` file list (every file found in
+    `LUT/` and the working directory at startup, capped at six visible rows),
+    and the `lut_scale` tuner. Switching grading off dims and disables the list
+    and the scale control.
+  - *SHARPEN* - the sharpening switch with its `sharpen_strength` tuner; the
+    tuner is disabled while sharpening is off.
+  - *FEATURES* - switches for face tracking, the time loop (30-frame ring
+    buffer replayed as a seamless loop), and the deep-fry effect (boosted
+    saturation/contrast with an RGB channel roll).
+
+On narrow terminals the two panels stack vertically. Selecting a `.cube` file
+bakes its 128^3 lookup table in a background worker, so the video stream never
+stalls.
 
 Disabling face tracking eases the view back to the base zoom, centered at
 `0.5, 0.45`, using the same spring/EMA smoothing as tracking.
