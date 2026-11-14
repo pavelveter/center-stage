@@ -76,10 +76,20 @@ appears as one shader entry. `Common` is prepended to every pass, buffers
 run in file-name order (the first buffer reads the camera on `iChannel0`,
 each following pass reads the previous pass output, every buffer's
 `iChannel1` is its own previous frame), and `Image.glsl` produces the
-visible frame. Buffer targets are float (RGBA16F) like Shadertoy's, so
-passes can carry negative/fractional data (e.g. the Lucas-Kanade optical
-flow pack), and the camera frame is converted to RGB for the pack, matching
-Shadertoy's channel order.
+visible frame (reading the last buffer on `iChannel0`). Buffer targets are
+float (RGBA16F) like Shadertoy's, so passes can carry negative/fractional
+data (e.g. the Lucas-Kanade optical flow pack), and the camera frame is
+converted to RGB for the pack, matching Shadertoy's channel order. Exports
+wired differently (e.g. `Image.glsl` reading `Buffer B` on `iChannel2`)
+take a directive comment in the pass file, e.g.
+`// center-stage: 2=Buffer B`; accepted names are `camera`, `noise`,
+`font`, `feedback` (the pass's own previous frame), and buffer pass names
+like `Buffer B` (its latest output). All four `iChannel` slots are declared
+in both single-file shaders and pack passes; a channel a pass samples
+without a directive defaults to the noise texture (unbound samplers read
+garbage on macOS). Note desktop GL, unlike Shadertoy's WebGL, does not
+zero-initial local variables - Shadertoy imports relying on that need a
+zero-init (see `Pixel-Art.glsl`).
 
 Single-file imports also get `iMouse` (always zero - drag interactions are
 not available), and `iChannel1` defaults to a generated RGBA noise texture

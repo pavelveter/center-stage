@@ -800,6 +800,130 @@ class TestShaderEngine(unittest.TestCase):
             self.assertTrue((out == frame).all())
             self.assertIn(pack_dir, engine._broken)
 
+    def test_pack_channel_directive_parsing(self):
+        """Pack pass directives map units to aux names and buffer passes."""
+        parse = tracker.MultiShader.parse_channels
+        names = ["Buffer A.glsl", "Buffer B.glsl"]
+        self.assertEqual(
+            parse("// center-stage: 1=noise 2=Buffer B", names),
+            {1: "noise", 2: ("buffer", 1)},
+        )
+        # Spaces optional, case ignored.
+        self.assertEqual(
+            parse("// center-stage: 0=feedback 1=bufferb", names),
+            {0: "feedback", 1: ("buffer", 1)},
+        )
+        # Unknown names are ignored, leaving the default wiring.
+        self.assertEqual(parse("// center-stage: 3=webcam", names), {})
+
+    def test_multibuffer_pack_channel_directive(self):
+        """A pass directive wires iChannelN to a named buffer's output."""
+        import os
+        import tempfile
+
+        import numpy as np
+
+        pack_dir = None
+        engine = tracker.ShaderEngine()
+        frame = np.zeros((30, 40, 3), dtype=np.uint8)
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                pack_dir = os.path.join(folder, "pack.glsl")
+                os.makedirs(pack_dir)
+                passes = {
+                    "Buffer A.glsl": (
+                        "void mainImage(out vec4 c, in vec2 p) {\n"
+                        "    c = vec4(1.0, 0.0, 0.0, 1.0);\n"
+                        "}\n"
+                    ),
+                    "Buffer B.glsl": (
+                        "void mainImage(out vec4 c, in vec2 p) {\n"
+                        "    c = vec4(0.0, 1.0, 0.0, 1.0);\n"
+                        "}\n"
+                    ),
+                    # The default Image wiring reads the last buffer (green)
+                    # on iChannel0; the directive makes iChannel2 carry
+                    # Buffer A (red) instead.
+                    "Image.glsl": (
+                        "// center-stage: 2=Buffer A\n"
+                        "void mainImage(out vec4 c, in vec2 p) {\n"
+                        "    c = texture(iChannel2, p / iResolution.xy);\n"
+                        "}\n"
+                    ),
+                }
+                for name, source in passes.items():
+                    with open(os.path.join(pack_dir, name), "w") as f:
+                        f.write(source)
+                out = engine.apply(frame, pack_dir)
+        except Exception:
+            self.skipTest("no usable GPU context in this environment")
+        finally:
+            if engine._ctx is not None and pack_dir in engine._programs:
+                engine._programs[pack_dir].close()
+            if engine._ctx is not None:
+                engine._ctx.release()
+        self.assertNotIn(pack_dir, engine._broken)
+        # Verbatim RGB import, so red publishes as BGR (R in the last slot).
+        self.assertEqual(int(out[5, 5, 0]), 0)
+        self.assertEqual(int(out[5, 5, 1]), 0)
+        self.assertEqual(int(out[5, 5, 2]), 255)
+
+    def test_multibuffer_pack_with_broken_image_disables_cleanly(self):
+        import os
+        import tempfile
+
+        import numpy as np
+
+        frame = np.zeros((30, 40, 3), dtype=np.uint8)
+        with tempfile.TemporaryDirectory() as folder:
+            pack_dir = os.path.join(folder, "pack.glsl")
+            os.makedirs(pack_dir)
+            with open(os.path.join(pack_dir, "Buffer A.glsl"), "w") as f:
+                f.write("void mainImage(out vec4 c, in vec2 p) { c = vec4(0); }")
+            with open(os.path.join(pack_dir, "Image.glsl"), "w") as f:
+                f.write("void mainImage(out vec4 c {")  # syntax error
+            engine = tracker.ShaderEngine()
+            try:
+                out = engine.apply(frame, pack_dir)
+            except Exception:
+                self.skipTest("no usable GPU context in this environment")
+            finally:
+                if engine._programs.get(pack_dir):
+                    engine._programs[pack_dir].close()
+                engine._ctx.release()
+            self.assertTrue((out == frame).all())
+            self.assertIn(pack_dir, engine._broken)
+
+    def test_single_file_ichannel2_reads_noise(self):
+        """iChannel2+ compile and bind noise instead of unbound garbage."""
+        import os
+        import tempfile
+
+        import numpy as np
+
+        path = None
+        engine = tracker.ShaderEngine()
+        frame = np.zeros((30, 40, 3), dtype=np.uint8)
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                path = os.path.join(folder, "ch2.glsl")
+                with open(path, "w") as f:
+                    f.write(
+                        "void mainImage(out vec4 c, in vec2 p) {\n"
+                        "    c = vec4(texture(iChannel2,\n"
+                        "        p / iResolution.xy).rgb, 1.0);\n"
+                        "}\n"
+                    )
+                out = engine.apply(frame, path)
+        except Exception:
+            self.skipTest("no usable GPU context in this environment")
+        finally:
+            if engine._ctx is not None:
+                engine._ctx.release()
+        self.assertNotIn(path, engine._broken)
+        # The noise texture's pixels, not driver garbage: varied values.
+        self.assertGreater(len(np.unique(out[..., 0])), 4)
+
 
 class TestLutDiscovery(unittest.TestCase):
     def test_scans_working_directory_and_lut_folder(self):

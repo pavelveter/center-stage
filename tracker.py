@@ -878,11 +878,15 @@ SHADER_FRAGMENT_TEMPLATE = """
 #version 330
 uniform sampler2D texture0;
 uniform sampler2D texture1;
+uniform sampler2D texture2;
+uniform sampler2D texture3;
 uniform vec2 iResolution;
 uniform float iTime;
 uniform vec4 iMouse;
 #define iChannel0 texture0
 #define iChannel1 texture1
+#define iChannel2 texture2
+#define iChannel3 texture3
 {user_source}
 out vec4 out_Color;
 void main() {{
@@ -935,44 +939,94 @@ class MultiShader:
     """A Shadertoy multibuffer export: a <name>.glsl folder of passes.
 
     The export format stores pass wiring outside the files, so this uses a
-    fixed convention that covers the standard layout (Common.glsl, Buffer
-    A/B/... .glsl, Image.glsl): Common is prepended to every pass, buffers
-    run in file-name order, the first buffer's iChannel0 is the camera frame
+    fixed convention plus per-pass directives. Without directives the
+    standard layout (Common.glsl, Buffer A/B/... .glsl, Image.glsl) works
+    like the common export: Common is prepended to every pass, buffers run
+    in file-name order, the first buffer's iChannel0 is the camera frame
     and each following pass reads the previous pass output, every buffer's
     iChannel1 is its own previous frame (ping-pong feedback, so temporal
     denoising like Lucas-Kanade's Buffer A works), and Image.glsl reads the
-    last buffer to produce the visible frame.
+    last buffer on iChannel0. Any channel a pass samples but that has no
+    directive defaults to the noise texture (unbound samplers read garbage
+    on macOS). Exports with other wiring (say Image.glsl reading Buffer B
+    on iChannel2) add a directive comment to the pass file, e.g.
+
+        // center-stage: 2=Buffer B
+
+    Names: camera, noise, font, feedback (the pass's own previous frame),
+    or a buffer pass name like "Buffer B" (its latest output, which may be
+    a previous frame when read before that buffer runs).
 
     Unlike single-file shaders (BGR in/out, matching the camera), a pack is
     a verbatim Shadertoy import, so the camera frame is converted to RGB
     before the first pass and the final render back to BGR.
     """
 
-    def __init__(self, ctx, quad_buffer, folder, start):
+    # Directive names that resolve to auxiliary textures or feedback.
+    AUX_NAMES = ("camera", "noise", "font", "feedback")
+
+    def __init__(self, ctx, quad_buffer, folder, start, aux_texture):
         self._ctx = ctx
         self._folder = folder
         self._start = start
         self._buffer = quad_buffer
+        self._aux_texture = aux_texture
         self._camera = None
         # Per buffer pass: [ping texture, pong texture] and matching FBOs;
         # rendering goes to the front entry, which then rotates to the back
         # so the next frame reads it as feedback.
         self._textures = []
         self._fbos = []
-        self._passes = []  # (program, quad VAO) per buffer pass
-        self._final = None  # (program, quad VAO) for Image.glsl
+        self._passes = []  # (program, quad VAO, channels) per buffer pass
+        self._final = None  # (program, quad VAO, channels) for Image.glsl
         self._size = (0, 0)
+
+    @staticmethod
+    def parse_channels(source, buffer_names):
+        """Map unit number -> channel name from // center-stage: directives.
+
+        Accepts the aux names (camera/noise/font/feedback) and references
+        to a buffer pass file like "Buffer B" (spaces optional, case
+        ignored). Unknown names are ignored, leaving the default wiring.
+        """
+        channels = {}
+        for line in source.splitlines():
+            marker = line.find("center-stage:")
+            if marker < 0:
+                continue
+            matches = re.findall(
+                r"(\d+)\s*=\s*(\w+(?:\s+\w+)*?)(?=\s+\d+\s*=|$)",
+                line[marker:],
+            )
+            for unit, name in matches:
+                key = name.strip().lower().replace(" ", "")
+                if key in MultiShader.AUX_NAMES:
+                    channels[int(unit)] = key
+                else:
+                    for i, buf in enumerate(buffer_names):
+                        stem = buf[: -len(".glsl")].lower().replace(" ", "")
+                        if key == stem:
+                            channels[int(unit)] = ("buffer", i)
+                            break
+        return channels
 
     def close(self):
         """Release everything, including the compiled pass programs."""
         self._release_targets()
-        for program, quad in [self._final, *self._passes]:
-            if quad is not None:
-                quad.release()
-            program.release()
+        for entry in self._passes:
+            self._release_pass(entry)
+        if self._final is not None:
+            self._release_pass(self._final)
         self._passes = []
         self._final = None
         self._size = (0, 0)
+
+    @staticmethod
+    def _release_pass(entry):
+        program, quad = entry[0], entry[1]
+        if quad is not None:
+            quad.release()
+        program.release()
 
     def _release_targets(self):
         """Release render targets; programs and quads stay usable."""
@@ -998,15 +1052,64 @@ class MultiShader:
         return program, quad
 
     def _set_clock(self, program):
-        program["texture0"].value = 0
-        if "texture1" in program:
-            program["texture1"].value = 1
-        program["iResolution"].value = (
-            float(self._size[0]),
-            float(self._size[1]),
-        )
+        # Defensive upload: unused uniforms are optimized out of a program.
+        if "iResolution" in program:
+            program["iResolution"].value = (
+                float(self._size[0]),
+                float(self._size[1]),
+            )
         if "iTime" in program:
             program["iTime"].value = time.monotonic() - self._start
+
+    def _default_channel(self, pass_index, unit):
+        """The fixed convention for a pass channel without a directive."""
+        if pass_index == len(self._passes):
+            # Image.glsl: read the last buffer on iChannel0.
+            return ("buffer", len(self._passes) - 1) if unit == 0 else "noise"
+        if unit == 0:
+            # First buffer reads the camera, the rest the previous pass.
+            return "camera" if pass_index == 0 else ("buffer", pass_index - 1)
+        if unit == 1:
+            return ("feedback", pass_index)
+        return "noise"
+
+    def _resolve_channel(self, name, pass_index):
+        """Texture for a channel name at pass runtime; None keeps it unbound."""
+        if name == "camera":
+            return self._camera
+        if name in ("noise", "font"):
+            return self._aux_texture(name)
+        if isinstance(name, tuple):
+            kind, index = name
+            if kind == "feedback":
+                # At render time the back entry is the previous frame; the
+                # pass about to run has not rotated yet.
+                return self._textures[index][1]
+            if kind == "buffer":
+                # That buffer's latest output (after its rotation this
+                # frame, or its previous frame if it has not run yet).
+                return self._textures[index][1]
+        return None
+
+    def _bind_channels(self, program, channels, pass_index):
+        """Bind all four samplers, defaults included, for one pass."""
+        for unit in range(4):
+            name = channels.get(
+                unit, self._default_channel(pass_index, unit)
+            )
+            tex = self._resolve_channel(name, pass_index)
+            if tex is None:
+                # Unknown/unresolvable names (or an aux that could not be
+                # created) fall back to noise; unbound reads garbage.
+                tex = self._aux_texture("noise")
+            tex.use(unit)
+            sampler = (
+                program[f"texture{unit}"]
+                if f"texture{unit}" in program
+                else None
+            )
+            if sampler is not None:
+                sampler.value = unit
 
     def build(self):
         """Compile every pass; None (after a warning) on any failure."""
@@ -1030,9 +1133,15 @@ class MultiShader:
         try:
             for name in buffers:
                 with open(os.path.join(self._folder, name)) as f:
-                    self._passes.append(self._compile(common + f.read()))
+                    source = common + f.read()
+                channels = self.parse_channels(source, buffers)
+                self._passes.append(
+                    (*self._compile(source), channels)
+                )
             with open(os.path.join(self._folder, "Image.glsl")) as f:
-                self._final = self._compile(common + f.read())
+                source = common + f.read()
+            channels = self.parse_channels(source, buffers)
+            self._final = (*self._compile(source), channels)
         except Exception as exc:
             print(f"warning: shader pack {self._folder} failed: {exc}")
             self.close()
@@ -1088,22 +1197,19 @@ class MultiShader:
         # and sample with the same uv mapping, so they need no flips.
         rgb = cv2.cvtColor(cv2.flip(frame_bgr, 0), cv2.COLOR_BGR2RGB)
         self._camera.write(rgb)
-        source = self._camera
-        for i, (program, quad) in enumerate(self._passes):
+        for i, (program, quad, channels) in enumerate(self._passes):
             textures = self._textures[i]
             fbos = self._fbos[i]
-            source.use(0)
-            textures[1].use(1)  # this buffer's previous frame
+            self._bind_channels(program, channels, i)
             self._set_clock(program)
             fbos[0].use()
             quad.render(moderngl.TRIANGLE_STRIP)
-            source = textures[0]
             # Rotate so the just-written texture becomes next frame's
             # feedback and the old feedback becomes the render target.
             textures.append(textures.pop(0))
             fbos.append(fbos.pop(0))
-        program, quad = self._final
-        source.use(0)
+        program, quad, channels = self._final
+        self._bind_channels(program, channels, len(self._passes))
         self._set_clock(program)
         output_fbo.use()
         quad.render(moderngl.TRIANGLE_STRIP)
@@ -1132,7 +1238,8 @@ class ShaderEngine:
     # Auxiliary textures a shader can bind instead of the camera, selectable
     # per channel with a directive comment in the shader file, e.g.
     #   // center-stage: 0=font 1=camera
-    # Channels not mentioned default to: 0=camera, 1=noise, others unbound.
+    # Channels not mentioned default to: 0=camera, others noise (unbound
+    # samplers read garbage on macOS, never black).
     AUX_KEYS = ("camera", "noise", "font")
 
     def __init__(self):
@@ -1267,14 +1374,11 @@ class ShaderEngine:
         # hues. Pass-through shaders are unaffected - both swaps cancel.
         rgb_in = cv2.cvtColor(cv2.flip(frame_bgr, 0), cv2.COLOR_BGR2RGB)
         self._texture.write(rgb_in)
-        for unit, name in (
-            (0, channels.get(0, "camera")),
-            (1, channels.get(1, "noise")),
-        ):
+        for unit in range(4):
+            name = channels.get(unit, "camera" if unit == 0 else "noise")
             # The camera texture on the requested unit; auxiliary stand-ins
-            # (noise/font) for decorative channels. A requested aux that does
-            # not exist leaves the unit unbound, which reads black like an
-            # empty Shadertoy channel.
+            # (noise/font) for decorative channels. Unbound samplers read
+            # garbage on macOS, so every declared unit gets a real texture.
             tex = self._texture if name == "camera" else self._aux_texture(name)
             if tex is not None:
                 tex.use(unit)
@@ -1304,7 +1408,7 @@ class ShaderEngine:
         entry = self._programs.get(path, False)
         if entry is False:
             entry = MultiShader(
-                self._ctx, self._buffer, path, self._start
+                self._ctx, self._buffer, path, self._start, self._aux_texture
             ).build()
             if entry is None:
                 self._broken.add(path)
