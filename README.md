@@ -69,14 +69,18 @@ loop so you can step away from a call:
   tracking state is restored when Magic Loop is switched off again.
 - The pipeline keeps a rolling ten-second history (300 frames) of the processed
   output, stored JPEG-compressed at reduced size.
-- On activation the history is scanned for the calmest 2-5 second window: each
+- The history is continuously scanned for the calmest 2-5 second window: each
   candidate is scored by its internal motion (mean difference between
-  consecutive frames) plus how well its last frame matches its first (the jump
-  at the splice), so the loop plays a moment where you sit still without
-  gestures or blinks at the cut.
+  consecutive frames) plus double the difference between its last and first
+  frame (the jump at the splice), so the loop plays a moment where you sit
+  still without gestures or blinks at the cut.
 - Engaging the mode dissolves from the live picture into the loop over half a
   second, and the splice itself is hidden by a 12-frame crossfade between the
-  loop tail and head; the loop then replays until the switch is turned off.
+  loop tail and head.
+- While Magic Loop is on, the pipeline keeps processing and recording, so
+  every time a loop pass finishes a fresh, newly optimized loop is pulled from
+  the newest ten seconds and dissolved into - the freeze is never locked to
+  one static slice.
 
 ## Auto-save
 

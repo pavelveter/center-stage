@@ -664,7 +664,9 @@ class MagicLoopBuffer:
     100 MB instead of the ~1.9 GB raw frames would need.
     """
 
-    THUMB_W, THUMB_H = 160, 90
+    # Scoring thumbnails; small on purpose - the scan runs on the video
+    # thread once per loop pass and must stay well under a frame budget.
+    THUMB_W, THUMB_H = 80, 45
 
     def __init__(self, length=MAGIC_LOOP_FRAMES):
         self._frames = collections.deque(maxlen=length)
@@ -683,54 +685,48 @@ class MagicLoopBuffer:
         self._frames.append((encoded.tobytes(), thumb))
 
     def build_loop(self):
-        """Find the calmest 2-5 s window and return a MagicLoopPlayer.
+        """Find the calmest 2-5 s window in recent history and return a player.
 
-        Each candidate window is scored by its internal motion (mean
+        Every candidate window is scored by its internal motion (mean
         difference between consecutive thumbnails, so gestures, blinks and
-        other transitions raise the score) plus the wrap difference between
-        its last and first frame, which is the visible jump at the splice.
-        The quietest window wins, so the loop plays a moment where the user
-        sits still and breathes naturally. Returns None while there is not
-        enough history yet.
+        other transitions raise the score) plus double the wrap difference
+        between its last and first frame, which is the visible jump at the
+        splice. Weighting the splice higher steers the choice towards windows
+        that start and end on a stable, still frame. The scan is vectorized
+        over all window starts, so a full rebuild costs a few milliseconds
+        and is safe to repeat every loop pass. Returns None while there is
+        not enough history yet.
         """
         frames = list(self._frames)
         n = len(frames)
         if n < MAGIC_LOOP_MIN_FRAMES:
             return None
-        thumbs = [thumb for _, thumb in frames]
+        thumbs = np.stack([thumb for _, thumb in frames]).astype(np.int16)
         # motion[i] = difference between frame i and i+1; prefix sums turn
         # any window's mean motion into an O(1) lookup.
-        motion = [
-            float(np.mean(cv2.absdiff(thumbs[i], thumbs[i + 1])))
-            for i in range(n - 1)
-        ]
-        prefix = [0.0]
-        for value in motion:
-            prefix.append(prefix[-1] + value)
-
-        def window_motion(start, length):
-            return (prefix[start + length - 1] - prefix[start]) / (length - 1)
+        motion = np.mean(np.abs(np.diff(thumbs, axis=0)), axis=(1, 2))
+        prefix = np.concatenate(([0.0], np.cumsum(motion)))
 
         max_len = min(MAGIC_LOOP_MAX_LOOP_FRAMES, n)
-        best = None  # (score, start, length)
-        # ponytail: ~2000 thumbnail diffs per activation only (~50 ms); use
-        # a stride over starts if that ever becomes visible.
+        best_score, best_start, best_length = None, 0, 0
         for length in range(
             MAGIC_LOOP_MIN_LOOP_FRAMES, max_len + 1, MAGIC_LOOP_LENGTH_STEP
         ):
-            for start in range(0, n - length + 1):
-                wrap = float(
-                    np.mean(
-                        cv2.absdiff(thumbs[start], thumbs[start + length - 1])
-                    )
-                )
-                score = window_motion(start, length) + wrap
-                if best is None or score < best[0]:
-                    best = (score, start, length)
-        if best is None:
-            return None
-        _, start, length = best
-        return MagicLoopPlayer([jpeg for jpeg, _ in frames[start : start + length]])
+            starts = np.arange(n - length + 1)
+            ends = starts + length - 1
+            internal = (prefix[ends] - prefix[starts]) / (length - 1)
+            wrap = np.mean(
+                np.abs(thumbs[ends] - thumbs[starts]), axis=(1, 2)
+            )
+            scores = internal + 2.0 * wrap
+            k = int(np.argmin(scores))
+            if best_score is None or scores[k] < best_score:
+                best_score = float(scores[k])
+                best_start = int(starts[k])
+                best_length = length
+        return MagicLoopPlayer(
+            [jpeg for jpeg, _ in frames[best_start : best_start + best_length]]
+        )
 
 
 class MagicLoopPlayer:
@@ -747,6 +743,9 @@ class MagicLoopPlayer:
         # A loop too short to fade would blend a frame with itself.
         self._fade = max(0, min(fade, len(encoded) - 2))
         self._index = 0
+        # Set when the playhead wraps; the pipeline uses it to pull a fresh
+        # loop from the newest history and clears it again.
+        self.pass_done = False
 
     def _decode(self, i, out_size):
         jpeg = cv2.imdecode(
@@ -775,6 +774,7 @@ class MagicLoopPlayer:
             # The crossfade already revealed frames 1..fade, so later passes
             # resume right after them; without a fade, wrap to the start.
             self._index = fade + 1 if fade else 0
+            self.pass_done = True
         else:
             self._index = i + 1
         return np.ascontiguousarray(frame)
@@ -899,9 +899,12 @@ class VideoPipeline(threading.Thread):
         time_loop = TimeLoop()
         magic_loop = MagicLoopBuffer()
         magic_player = None
+        magic_prev_player = None
         magic_on_prev = False
         magic_entry_fade = max(1, int(cfg["fps"] * MAGIC_LOOP_ENTRY_FADE_SECONDS))
         magic_entry_left = 0
+        magic_swap_fade = MAGIC_LOOP_FADE
+        magic_swap_left = 0
 
         while not self._stop_event.is_set():
             try:
@@ -931,10 +934,20 @@ class VideoPipeline(threading.Thread):
                 magic_on = bool(state["magic_loop_enabled"])
                 if magic_on != magic_on_prev:
                     magic_on_prev = magic_on
-                    # Activation freezes the current framing: replaying skips
-                    # the whole pipeline, so tracking and zoom simply stop.
-                    magic_player = magic_loop.build_loop() if magic_on else None
-                    magic_entry_left = magic_entry_fade if magic_on else 0
+                    if magic_on:
+                        # A fresh, newly optimized loop is built on every
+                        # activation, never reused from a previous session.
+                        magic_player = magic_loop.build_loop()
+                        magic_prev_player = None
+                        magic_entry_left = (
+                            magic_entry_fade if magic_player is not None else 0
+                        )
+                        magic_swap_left = 0
+                    else:
+                        magic_player = None
+                        magic_prev_player = None
+                        magic_entry_left = 0
+                        magic_swap_left = 0
                 if magic_on and magic_player is None:
                     # History still building up; retry until there is enough.
                     player = magic_loop.build_loop()
@@ -942,15 +955,15 @@ class VideoPipeline(threading.Thread):
                         magic_player = player
                         magic_entry_left = magic_entry_fade
 
-                magic_active = magic_on and magic_player is not None
-                looping = bool(state["time_loop_enabled"]) and time_loop.ready
-                if magic_active and magic_entry_left <= 0:
-                    # Steady state: replay the frozen loop.
-                    out_frame = magic_player.next_frame((out_w, out_h))
-                elif looping and not magic_active:
-                    # Replaying the buffer skips the whole image pipeline.
-                    out_frame = time_loop.next_frame()
-                    # Replaying the buffer skips the whole image pipeline.
+                # The plain Time Loop replay skips the whole image pipeline,
+                # but Magic Loop keeps it running so its history stays fresh
+                # and each pass can be re-optimized from the newest frames.
+                looping = (
+                    bool(state["time_loop_enabled"])
+                    and time_loop.ready
+                    and not magic_on
+                )
+                if looping:
                     out_frame = time_loop.next_frame()
                 else:
                     if not state["tracking_enabled"]:
@@ -1032,21 +1045,47 @@ class VideoPipeline(threading.Thread):
                     if state["deep_fry_enabled"]:
                         out_frame = apply_deep_fry(out_frame)
 
-                    if magic_active:
-                        # Entry crossfade: dissolve the live picture into the
-                        # loop over ~0.5 s so engaging Magic Loop never pops.
-                        alpha = 1.0 - magic_entry_left / magic_entry_fade
-                        loop_frame = magic_player.next_frame((out_w, out_h))
-                        out_frame = cv2.addWeighted(
-                            out_frame, 1.0 - alpha, loop_frame, alpha, 0.0
-                        )
-                        magic_entry_left -= 1
-
+                    # Feed both replay buffers with the pure processed frame;
+                    # blending below must never leak into recorded history.
                     out_frame = time_loop.record(out_frame)
-                    # Always feed the AFK history so Magic Loop can start
-                    # from the moment it is switched on. The ~2 ms encode
-                    # fits the frame budget at 30 fps.
+                    # The ~2 ms encode fits the frame budget at 30 fps and
+                    # keeps the AFK history current for loop regeneration.
                     magic_loop.record(out_frame)
+
+                    if magic_on and magic_player is not None:
+                        loop_frame = magic_player.next_frame((out_w, out_h))
+                        if magic_player.pass_done:
+                            magic_player.pass_done = False
+                            # A pass finished: pull a fresh, newly optimized
+                            # loop from the newest history, so the freeze is
+                            # never locked into one static buffer slice.
+                            fresh = magic_loop.build_loop()
+                            if fresh is not None:
+                                magic_prev_player = magic_player
+                                magic_player = fresh
+                                magic_swap_left = magic_swap_fade
+                        if magic_swap_left > 0 and magic_prev_player is not None:
+                            # Dissolve the old loop into the fresh one so a
+                            # regeneration is as invisible as the entry.
+                            alpha = 1.0 - magic_swap_left / magic_swap_fade
+                            out_frame = cv2.addWeighted(
+                                magic_prev_player.next_frame((out_w, out_h)),
+                                1.0 - alpha,
+                                loop_frame,
+                                alpha,
+                                0.0,
+                            )
+                            magic_swap_left -= 1
+                        elif magic_entry_left > 0:
+                            # Entry crossfade: dissolve the live picture into
+                            # the loop over ~0.5 s so engaging never pops.
+                            alpha = 1.0 - magic_entry_left / magic_entry_fade
+                            out_frame = cv2.addWeighted(
+                                out_frame, 1.0 - alpha, loop_frame, alpha, 0.0
+                            )
+                            magic_entry_left -= 1
+                        else:
+                            out_frame = loop_frame
 
                 cam.send(out_frame)
                 cam.sleep_until_next_frame()

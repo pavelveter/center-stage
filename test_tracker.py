@@ -302,6 +302,9 @@ class TestMagicLoop(unittest.TestCase):
             player.next_frame(out_size)
         # After one pass the playhead resumes past the crossfaded head.
         self.assertEqual(player._index, fade + 1)
+        # The wrap is reported so the pipeline can pull a fresh loop.
+        self.assertTrue(player.pass_done)
+        player.pass_done = False
         # The final faded frame is exactly the head frame it blends into.
         tail = player.next_frame(out_size)  # i == n - 1, alpha == 1
         head = cv2.resize(
@@ -329,6 +332,7 @@ class TestMagicLoop(unittest.TestCase):
         player.next_frame((80, 60))
         player.next_frame((80, 60))
         self.assertEqual(player._index, 0)
+        self.assertTrue(player.pass_done)
 
 
 class TestLutDiscovery(unittest.TestCase):
@@ -464,9 +468,11 @@ class TestVideoPipeline(unittest.TestCase):
                 counter["value"] += 1
                 value = counter["value"]
                 frame = np.full((120, 160, 3), 90, dtype=np.uint8)
-                # A moving column gives every live frame a distinct structure
-                # that survives JPEG, unlike a flat counter-encoded color.
-                frame[:, value % 160] = 255
+                # A moving column gives the first era distinct structure that
+                # survives JPEG; afterwards the scene is perfectly still, so
+                # a fresh loop pulled from the newest history has no column.
+                if value <= 120:
+                    frame[:, value % 160] = 255
                 return True, frame
 
             def release(self):
@@ -523,30 +529,27 @@ class TestVideoPipeline(unittest.TestCase):
             ),
         ):
             pipeline.start()
-            # Give the history time to fill past MAGIC_LOOP_MIN_FRAMES and
-            # the player to cycle at least twice.
-            deadline = time.monotonic() + 5.0
-            while time.monotonic() < deadline and len(sent) < 200:
+            # Enough frames for the history to fill, the first loop (built
+            # from the moving era) to play, and a fresh loop to be pulled
+            # from the still era that follows.
+            deadline = time.monotonic() + 12.0
+            while time.monotonic() < deadline and len(sent) < 600:
                 time.sleep(0.01)
             pipeline.stop()
             pipeline.join(2.0)
 
         self.assertFalse(pipeline.is_alive())
-        self.assertGreater(len(sent), 100)
-        # Live frames are unique (counter-encoded), so a repeated frame in
-        # the tail proves the published stream froze into the replayed loop.
-        head_keys = {frame.tobytes() for frame in sent[:50]}
-        self.assertGreater(len(head_keys), 45)
-        seen = {}
-        repeat_gap = None
-        for k, frame in enumerate(sent[50:]):
-            key = frame.tobytes()
-            if key in seen:
-                repeat_gap = k - seen[key]
-                break
-            seen[key] = k
-        self.assertIsNotNone(repeat_gap)
-        self.assertGreater(repeat_gap, 1)
+        self.assertGreater(len(sent), 400)
+        bright = [int(frame.max()) for frame in sent]
+        # Mid-stream: the live scene went still at frame 120, yet published
+        # frames still show the bright column - recorded moving-era content
+        # is being replayed, not the live feed.
+        self.assertTrue(any(value >= 200 for value in bright[140:320]))
+        # End: a regenerated loop from the newest (still) history plays - a
+        # statically locked slice would keep showing the moving column.
+        tail = {frame.tobytes() for frame in sent[-120:]}
+        self.assertEqual(len(tail), 1)
+        self.assertLess(bright[-1], 200)
 
 
 class TestMainCli(unittest.TestCase):
