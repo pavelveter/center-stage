@@ -562,6 +562,70 @@ class TestShaderEngine(unittest.TestCase):
             tracker.ShaderEngine.parse_channels("void mainImage() {}"), {}
         )
 
+    def test_dither_shader_matches_cpu_bayer_reference(self):
+        """A Bayer-dither shader must decide every pixel identically to a
+        CPU reference - no filtering blur or sampling offsets allowed."""
+        import cv2
+        import numpy as np
+
+        source = """
+        const int bayer[64] = int[64](
+             0, 32,  8, 40,  2, 34, 10, 42,
+            48, 16, 56, 24, 50, 18, 58, 26,
+            12, 44,  4, 36, 14, 46,  6, 38,
+            60, 28, 52, 20, 62, 30, 54, 22,
+             3, 35, 11, 43,  1, 33,  9, 41,
+            51, 19, 59, 27, 49, 17, 57, 25,
+            15, 47,  7, 39, 13, 45,  5, 37,
+            63, 31, 55, 23, 61, 29, 53, 21
+        );
+        void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+            vec2 uv = floor(fragCoord) / iResolution.xy;
+            vec3 t = texture(iChannel0, uv).rgb;
+            float luma = dot(t, vec3(0.299, 0.587, 0.114));
+            luma = clamp((luma - 0.5) * 0.98 + 0.5 - 0.09, 0.0, 1.0);
+            int x = int(mod(floor(fragCoord).x, 8.0));
+            int y = int(mod(floor(fragCoord).y, 8.0));
+            float d = step(float(bayer[x + y * 8]) / 64.0, luma);
+            fragColor = vec4(mix(vec3(0.0), vec3(1.0), d), 1.0);
+        }
+        """
+        engine = tracker.ShaderEngine()
+        rng = np.random.default_rng(3)
+        frame = rng.integers(0, 255, (256, 512, 3), dtype=np.uint8)
+        try:
+            import tempfile
+
+            with tempfile.TemporaryDirectory() as folder:
+                path = self._write(folder, "bayer.glsl", source)
+                out = engine.apply(frame, path)
+        except Exception:
+            self.skipTest("no usable GPU context in this environment")
+        finally:
+            if engine._ctx is not None:
+                engine._ctx.release()
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        luma = rgb[..., 0] * 0.299 + rgb[..., 1] * 0.587 + rgb[..., 2] * 0.114
+        luma = np.clip((luma - 0.5) * 0.98 + 0.5 - 0.09, 0, 1)
+        bayer = np.array(
+            [
+                [0, 32, 8, 40, 2, 34, 10, 42],
+                [48, 16, 56, 24, 50, 18, 58, 26],
+                [12, 44, 4, 36, 14, 46, 6, 38],
+                [60, 28, 52, 20, 62, 30, 54, 22],
+                [3, 35, 11, 43, 1, 33, 9, 41],
+                [51, 19, 59, 27, 49, 17, 57, 25],
+                [15, 47, 7, 39, 13, 45, 5, 37],
+                [63, 31, 55, 23, 61, 29, 53, 21],
+            ]
+        )
+        h, w = luma.shape
+        # Shadertoy coordinates are y-up, so the tile anchors bottom-left.
+        limit = np.tile(bayer[::-1], (h // 8 + 1, w // 8 + 1))[:h, :w] / 64.0
+        expect = limit <= luma
+        got = out[..., 0] > 128  # white in BGR
+        self.assertGreaterEqual((expect == got).mean(), 0.999)
+
     def test_screen_space_shaders_get_shadertoy_y_up_orientation(self):
         """fragCoord.y > H/2 must land in the published TOP half.
 

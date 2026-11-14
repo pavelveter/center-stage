@@ -1045,6 +1045,14 @@ class MultiShader:
         self._release_targets()
         try:
             self._camera = self._ctx.texture((width, height), 3, dtype="f1")
+            # NEAREST, not LINEAR: imported shaders sample at uv = k/N,
+            # which lands exactly on texel boundaries; linear would average
+            # a 2x2 texel block per sample (a blur that shifts luma across
+            # dither thresholds - 1bit.glsl turned speckled). Nearest keeps
+            # the same-resolution mapping a crisp texel-per-pixel copy,
+            # which is what Shadertoy's larger webcam texture effectively
+            # gives those uv's too.
+            self._camera.filter = (moderngl.NEAREST, moderngl.NEAREST)
             for _ in self._passes:
                 # Two ping-pong targets per buffer: the framebuffer wraps the
                 # texture, so what is rendered is exactly what the next pass
@@ -1203,7 +1211,12 @@ class ShaderEngine:
                 np.array([-1, -1, 1, -1, -1, 1, 1, 1], dtype=np.float32).tobytes()
             )
             self._texture = self._ctx.texture((width, height), 3, dtype="f1")
-            self._texture.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            # NEAREST, not LINEAR: imported shaders sample at uv = k/N,
+            # which lands exactly on texel boundaries; linear would average
+            # a 2x2 texel block per sample (a blur that shifts luma across
+            # dither thresholds - 1bit.glsl turned speckled). Nearest keeps
+            # the same-resolution mapping a crisp texel-per-pixel copy.
+            self._texture.filter = (moderngl.NEAREST, moderngl.NEAREST)
             self._texture.repeat_x = False
             self._texture.repeat_y = False
             self._fbo = self._ctx.simple_framebuffer((width, height), 3)
