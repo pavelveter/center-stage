@@ -14,6 +14,7 @@ import configparser
 import glob
 import math
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -879,6 +880,7 @@ uniform sampler2D texture0;
 uniform sampler2D texture1;
 uniform vec2 iResolution;
 uniform float iTime;
+uniform vec4 iMouse;
 #define iChannel0 texture0
 #define iChannel1 texture1
 {user_source}
@@ -1114,6 +1116,12 @@ class ShaderEngine:
 
     VERTEX = SHADER_VERTEX_SOURCE
 
+    # Auxiliary textures a shader can bind instead of the camera, selectable
+    # per channel with a directive comment in the shader file, e.g.
+    #   // center-stage: 0=font 1=camera
+    # Channels not mentioned default to: 0=camera, 1=noise, others unbound.
+    AUX_KEYS = ("camera", "noise", "font")
+
     def __init__(self):
         self._ctx = None
         self._buffer = None
@@ -1121,9 +1129,61 @@ class ShaderEngine:
         self._texture = None
         self._size = (0, 0)
         self._start = time.monotonic()
+        self._aux = {}  # name -> texture, created lazily per context
         # path -> (program, quad VAO) / MultiShader, or None (broken)
         self._programs = {}
         self._broken = set()
+
+    @staticmethod
+    def parse_channels(source):
+        """Map unit number -> aux name from // center-stage: directives."""
+        channels = {}
+        for line in source.splitlines():
+            marker = line.find("center-stage:")
+            if marker < 0:
+                continue
+            for unit, name in re.findall(
+                r"(\d+)\s*=\s*(\w+)", line[marker:]
+            ):
+                if name in ShaderEngine.AUX_KEYS:
+                    channels[int(unit)] = name
+        return channels
+
+    def _aux_texture(self, name):
+        """Return the named auxiliary texture, creating it on first use."""
+        if name in self._aux:
+            return self._aux[name]
+        if name == "noise":
+            rng = np.random.default_rng(1234)
+            data = rng.integers(0, 256, (256, 256, 4), dtype=np.uint8)
+            tex = self._ctx.texture((256, 256), 4, data.tobytes())
+            # Noise lookups often go outside [0,1] on purpose.
+            tex.repeat_x = True
+            tex.repeat_y = True
+        elif name == "font":
+            # A 16x16 grid of ASCII glyphs standing in for Shadertoy's font
+            # texture (built with OpenCV's vector font, not pixel-perfect).
+            cell = 16
+            atlas = np.zeros((256, 256, 4), dtype=np.uint8)
+            for code in range(32, 127):
+                x = (code % 16) * cell
+                y = (code // 16) * cell
+                glyph = np.zeros((cell, cell), dtype=np.uint8)
+                cv2.putText(
+                    glyph, chr(code), (1, cell - 3),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, 255, 1, cv2.LINE_AA,
+                )
+                atlas[y : y + cell, x : x + cell, 0] = glyph
+                # Approximate the SDF-ish alpha some shaders read for
+                # outlines: a slightly dilated glyph.
+                atlas[y : y + cell, x : x + cell, 3] = cv2.dilate(
+                    glyph, np.ones((3, 3), np.uint8)
+                )
+            tex = self._ctx.texture((256, 256), 4, atlas.tobytes())
+        else:
+            return None
+        self._aux[name] = tex
+        return tex
 
     def _ensure_size(self, width, height):
         """Create the GL objects for a frame size; recreate if it changed."""
@@ -1172,6 +1232,7 @@ class ShaderEngine:
                         self._ctx.vertex_array(
                             program, [(self._buffer, "2f", "in_pos")]
                         ),
+                        self.parse_channels(source),
                     )
                 except Exception as exc:
                     if path not in self._broken:
@@ -1180,16 +1241,25 @@ class ShaderEngine:
             self._programs[path] = entry
         if entry is None:
             return frame_bgr
-        program, quad = entry
+        program, quad, channels = entry
 
         self._texture.write(frame_bgr)
-        self._texture.use(0)
-        program["texture0"].value = 0
-        if "texture1" in program:
-            # Unused by single-file shaders; an unbound unit reads black,
-            # matching Shadertoy's empty channel.
-            program["texture1"].value = 1
-        program["iResolution"].value = (float(width), float(height))
+        for unit, name in (
+            (0, channels.get(0, "camera")),
+            (1, channels.get(1, "noise")),
+        ):
+            # The camera texture on the requested unit; auxiliary stand-ins
+            # (noise/font) for decorative channels. A requested aux that does
+            # not exist leaves the unit unbound, which reads black like an
+            # empty Shadertoy channel.
+            tex = self._texture if name == "camera" else self._aux_texture(name)
+            if tex is not None:
+                tex.use(unit)
+            sampler = program[f"texture{unit}"] if f"texture{unit}" in program else None
+            if sampler is not None:
+                sampler.value = unit
+        if "iResolution" in program:
+            program["iResolution"].value = (float(width), float(height))
         if "iTime" in program:
             # Seconds since the engine started; shader effects use it as
             # their animation clock (monotonic, no wall-clock jumps).

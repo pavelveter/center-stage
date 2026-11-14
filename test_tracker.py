@@ -468,6 +468,100 @@ class TestShaderEngine(unittest.TestCase):
         self.assertNotIn(path, engine._broken)
         self.assertFalse((out == frame).all())
 
+    def test_imouse_is_declared_for_shadertoy_imports(self):
+        """Shaders reading iMouse must compile; default mouse is zero."""
+        import os
+        import tempfile
+
+        import numpy as np
+
+        source = """
+        void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+            vec2 m = iMouse.xy / iResolution.xy;
+            vec3 c = texture(iChannel0, fragCoord.xy / iResolution.xy).rgb;
+            fragColor = vec4(mix(c, vec3(1.0), m.x), 1.0);
+        }
+        """
+        engine = tracker.ShaderEngine()
+        frame = np.full((40, 50, 3), 90, dtype=np.uint8)
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                path = self._write(folder, "mouse.glsl", source)
+                out = engine.apply(frame, path)
+        except Exception:
+            self.skipTest("no usable GPU context in this environment")
+        finally:
+            if engine._ctx is not None:
+                engine._ctx.release()
+        self.assertNotIn(path, engine._broken)
+        # With the mouse at (0,0) the frame passes through untouched.
+        self.assertTrue((out == frame).all())
+
+    def test_auxiliary_noise_texture_drives_channel_one(self):
+        """iChannel1 must hold live noise, not an unbound (garbage) unit."""
+        import numpy as np
+
+        source = """
+        void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+            float n = texture(iChannel1, fragCoord.xy / 32.0).r;
+            fragColor = vec4(vec3(n), 1.0);
+        }
+        """
+        engine = tracker.ShaderEngine()
+        frame = np.zeros((64, 64, 3), dtype=np.uint8)
+        try:
+            import tempfile
+
+            with tempfile.TemporaryDirectory() as folder:
+                path = self._write(folder, "noise.glsl", source)
+                out = engine.apply(frame, path)
+        except Exception:
+            self.skipTest("no usable GPU context in this environment")
+        finally:
+            if engine._ctx is not None:
+                engine._ctx.release()
+        # Non-constant noise pattern with real variance.
+        self.assertGreater(int(out.std()), 10)
+        self.assertGreater(int(out.max()), 40)
+
+    def test_font_texture_is_a_glyph_atlas(self):
+        import numpy as np
+
+        engine = tracker.ShaderEngine()
+        try:
+            engine._ensure_size(8, 8)
+            font = engine._aux_texture("font")
+            # Read while the context is alive; after release() it is gone.
+            data = np.frombuffer(font.read(alignment=1), np.uint8).reshape(
+                256, 256, 4
+            )
+        except Exception:
+            self.skipTest("no usable GPU context in this environment")
+        finally:
+            if engine._ctx is not None:
+                engine._ctx.release()
+        self.assertIsNotNone(font)
+        # Glyph cells are addressed as code = row_cell*16 + col_cell:
+        # '0' is 48 (row 3, col 0) and 'A' is 65 (row 4, col 1); codes
+        # below 32 stay blank.
+        self.assertGreater(int(data[48:64, 0:16, 0].max()), 100)
+        self.assertGreater(int(data[64:80, 16:32, 0].max()), 100)
+        self.assertEqual(int(data[0:16, 0:16, 0].max()), 0)
+
+    def test_channel_directive_is_parsed(self):
+        source = (
+            "// center-stage: 0=font 1=camera\n"
+            "// center-stage: 2=noise\n"
+            "void mainImage(out vec4 c, in vec2 p) {}\n"
+        )
+        self.assertEqual(
+            tracker.ShaderEngine.parse_channels(source),
+            {0: "font", 1: "camera", 2: "noise"},
+        )
+        self.assertEqual(
+            tracker.ShaderEngine.parse_channels("void mainImage() {}"), {}
+        )
+
     def test_multibuffer_pack_runs_passes_with_feedback(self):
         """A <name>.glsl folder runs Common + buffers + Image as one pack."""
         import os

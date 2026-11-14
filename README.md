@@ -81,6 +81,14 @@ passes can carry negative/fractional data (e.g. the Lucas-Kanade optical
 flow pack), and the camera frame is converted to RGB for the pack, matching
 Shadertoy's channel order.
 
+Single-file imports also get `iMouse` (always zero - drag interactions are
+not available), and `iChannel1` defaults to a generated RGBA noise texture
+(unbound samplers read garbage on macOS, not black). A shader that expects
+other Shadertoy channel assets can remap channels with a directive comment,
+e.g. `// center-stage: 0=font 1=camera` - supported stand-ins are `camera`
+(the processed frame), `noise`, and `font` (a generated 16x16 ASCII glyph
+atlas approximating Shadertoy's font texture).
+
 Disabling face tracking eases the view back to the base zoom, centered at
 `0.5, 0.45`, using the same spring/EMA smoothing as tracking.
 
