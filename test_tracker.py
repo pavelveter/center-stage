@@ -599,13 +599,49 @@ class TestShaderEngine(unittest.TestCase):
         finally:
             if engine._ctx is not None:
                 engine._ctx.release()
-        # Screen space: red (y > H/2) on the published top half.
-        self.assertEqual(int(out[10, 40, 0]), 255)
-        self.assertEqual(int(out[10, 40, 2]), 0)
-        self.assertEqual(int(out[50, 40, 2]), 255)
-        self.assertEqual(int(out[50, 40, 0]), 0)
+        # Screen space: red (y > H/2) on the published top half. The shader
+        # writes RGB; the engine's verbatim-import round trip publishes it
+        # as BGR, so red (1,0,0) arrives as (0,0,255).
+        self.assertEqual(int(out[10, 40, 0]), 0)
+        self.assertEqual(int(out[10, 40, 2]), 255)
+        self.assertEqual(int(out[50, 40, 0]), 255)
+        self.assertEqual(int(out[50, 40, 2]), 0)
         # Camera sampling: still pixel-exact, no flip.
         self.assertTrue((cam_out == frame).all())
+
+    def test_hardcoded_rgb_colors_publish_with_intended_hue(self):
+        """A shader writing RGB palette constants must arrive hue-correct.
+
+        1bit.glsl's orange #F27A2D published as BGR-preserving output
+        appeared blue; single-file shaders are verbatim Shadertoy imports
+        now, so RGB constants convert on readback.
+        """
+        import os
+        import tempfile
+
+        import numpy as np
+
+        source = """
+        void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+            fragColor = vec4(0.949, 0.478, 0.176, 1.0); // #F27A2D orange
+        }
+        """
+        engine = tracker.ShaderEngine()
+        frame = np.full((40, 50, 3), 90, dtype=np.uint8)
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                path = self._write(folder, "palette.glsl", source)
+                out = engine.apply(frame, path)
+        except Exception:
+            self.skipTest("no usable GPU context in this environment")
+        finally:
+            if engine._ctx is not None:
+                engine._ctx.release()
+        # Published BGR must read as the intended orange hue (values are
+        # the palette floats through the 8-bit round trip).
+        self.assertEqual(int(out[20, 25, 0]), 45)
+        self.assertEqual(int(out[20, 25, 1]), 122)
+        self.assertEqual(int(out[20, 25, 2]), 242)
 
     def test_multibuffer_pack_runs_passes_with_feedback(self):
         """A <name>.glsl folder runs Common + buffers + Image as one pack."""

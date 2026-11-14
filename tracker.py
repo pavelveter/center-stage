@@ -1248,12 +1248,12 @@ class ShaderEngine:
             return frame_bgr
         program, quad, channels = entry
 
-        # GL's fragment origin is bottom-up (fragCoord.y = 0 at the bottom,
-        # like Shadertoy's display). Flipping at BOTH boundaries - upload and
-        # readback - keeps uv-sampling shaders pixel-exact (the two flips
-        # cancel) while giving screen-space shaders Shadertoy's y-up
-        # orientation relative to the published top-down frame.
-        self._texture.write(cv2.flip(frame_bgr, 0))
+        # Verbatim Shadertoy import: the camera frame goes in as RGB (BGR
+        # -> RGB on upload, back on readback), so shaders hardcoding RGB
+        # palette colors (1bit.glsl, smiley.glsl) render their intended
+        # hues. Pass-through shaders are unaffected - both swaps cancel.
+        rgb_in = cv2.cvtColor(cv2.flip(frame_bgr, 0), cv2.COLOR_BGR2RGB)
+        self._texture.write(rgb_in)
         for unit, name in (
             (0, channels.get(0, "camera")),
             (1, channels.get(1, "noise")),
@@ -1277,9 +1277,13 @@ class ShaderEngine:
         self._fbo.use()
         quad.render(moderngl.TRIANGLE_STRIP)
         data = self._fbo.read(components=3, alignment=1)
-        # Undo the bottom-up GL readback (see the upload flip above).
-        return cv2.flip(
-            np.frombuffer(data, dtype=np.uint8).reshape(height, width, 3), 0
+        # Undo the bottom-up GL readback and the BGR->RGB upload swap (see
+        # the upload comment above).
+        return cv2.cvtColor(
+            cv2.flip(
+                np.frombuffer(data, dtype=np.uint8).reshape(height, width, 3), 0
+            ),
+            cv2.COLOR_RGB2BGR,
         )
 
     def _apply_multi(self, frame_bgr, path):
