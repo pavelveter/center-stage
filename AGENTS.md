@@ -1,0 +1,1 @@
+/Users/pavelveter/.config/opencode/AGENTS.md
