@@ -19,21 +19,23 @@ from textual.widgets import (
     Header,
     Input,
     Label,
-    OptionList,
+    Rule,
+    Select,
     Static,
     Switch,
 )
-from textual.widgets.option_list import Option
 
 import tracker
 
 # Widget id -> (label, SharedState key). Order defines the on-screen order.
+# sw-lut and sw-sharpen are composed inside their own blocks and skipped in
+# the FEATURES loop, but stay here so Changed messages update the state.
 SWITCHES = {
-    "sw-tracking": ("Face tracking", "tracking_enabled"),
-    "sw-lut": ("LUT grading", "lut_enabled"),
-    "sw-sharpen": ("Smart sharpen", "sharpen_enabled"),
-    "sw-loop": ("Time loop (1s)", "time_loop_enabled"),
-    "sw-fry": ("Deep fry / glitch", "deep_fry_enabled"),
+    "sw-tracking": ("Face Tracking", "tracking_enabled"),
+    "sw-lut": ("LUT Grading", "lut_enabled"),
+    "sw-sharpen": ("Smart Sharpen", "sharpen_enabled"),
+    "sw-loop": ("Time Loop (1s)", "time_loop_enabled"),
+    "sw-fry": ("Deep Fry / Glitch", "deep_fry_enabled"),
 }
 
 # Input suffix -> (label, SharedState key, minimum, maximum, button step).
@@ -41,8 +43,8 @@ SWITCHES = {
 TUNING = {
     "zoom": ("Zoom", "zoom", 1.0, 4.0, 0.05),
     "smoothing": ("Smoothing", "smoothing", 0.01, 0.30, 0.01),
-    "sharpen": ("Sharpen strength", "sharpen_strength", 0.0, 1.0, 0.05),
-    "lutscale": ("LUT scale", "lut_scale", 2, 16, 1),
+    "sharpen": ("Strength", "sharpen_strength", 0.0, 1.0, 0.05),
+    "lutscale": ("Intensity / Scale", "lut_scale", 2, 16, 1),
 }
 
 AUTOSAVE_SECONDS = 5.0
@@ -117,7 +119,7 @@ class CenterStageApp(App):
         height: auto;
     }
     .row {
-        height: 3;
+        height: auto;
         align-vertical: middle;
     }
     .row .name {
@@ -128,15 +130,32 @@ class CenterStageApp(App):
     }
     .row Input {
         width: 12;
+        height: 1;
+        border: none;
     }
     .row Button {
         width: 5;
         min-width: 3;
+        height: 1;
+        border: none;
+        background: $surface-lighten-2;
     }
-    #luts {
-        height: auto;
-        max-height: 6;
-        margin-bottom: 1;
+    #lut-select {
+        width: 1fr;
+        margin-left: 1;
+        min-width: 16;
+        height: 1;
+        border: none;
+        background: $surface-lighten-2;
+    }
+    #lut-select SelectCurrent {
+        border: none !important;
+        height: 1;
+        padding: 0 1;
+    }
+    .rule {
+        margin: 1 0;
+        color: $primary-darken-1;
     }
     """
     # priority bindings keep the shortcuts working while a tuning input or the
@@ -169,8 +188,14 @@ class CenterStageApp(App):
             yield Input(value=format_value(suffix, values[key]), id=f"in-{suffix}")
             yield Button("+", id=f"inc-{suffix}")
 
+    def lut_options(self):
+        """(label, path) pairs for the LUT dropdown, blank included."""
+        return [(os.path.basename(path), path) for path in self.lut_files]
+
     def compose(self) -> ComposeResult:
         values = self.state.snapshot()
+        current = os.path.abspath(values["lut_file"] or "")
+        selected = current if current in self.lut_files else Select.NULL
         yield Header()
         with Horizontal(id="body"):
             with Vertical(classes="sidebar", id="left"):
@@ -184,25 +209,27 @@ class CenterStageApp(App):
                 yield Static(
                     "IMAGE PROCESSING & FEATURES", classes="panel-title first"
                 )
-                yield Static("LUT", classes="sub-title")
                 with Horizontal(classes="row"):
-                    yield Label("LUT grading", classes="name")
+                    yield Label("LUT Grading", classes="name")
                     yield Switch(value=bool(values["lut_enabled"]), id="sw-lut")
-                yield OptionList(
-                    *[
-                        Option(os.path.basename(path), id=path)
-                        for path in self.lut_files
-                    ],
-                    id="luts",
-                )
+                    yield Select(
+                        self.lut_options(),
+                        value=selected,
+                        prompt="LUT .cube",
+                        allow_blank=True,
+                        compact=True,
+                        type_to_search=False,
+                        id="lut-select",
+                    )
                 yield from self.tuning_row("lutscale", values)
-                yield Static("SHARPEN", classes="sub-title")
+                yield Rule(classes="rule")
                 with Horizontal(classes="row"):
-                    yield Label("Smart sharpen", classes="name")
+                    yield Label("Smart Sharpen", classes="name")
                     yield Switch(
                         value=bool(values["sharpen_enabled"]), id="sw-sharpen"
                     )
                 yield from self.tuning_row("sharpen", values)
+                yield Rule(classes="rule")
                 yield Static("FEATURES", classes="sub-title")
                 for widget_id, (label, key) in SWITCHES.items():
                     if widget_id in ("sw-lut", "sw-sharpen"):
@@ -216,11 +243,11 @@ class CenterStageApp(App):
         self.pipeline.start()
         self.set_interval(TELEMETRY_SECONDS, self.refresh_telemetry)
         self.set_interval(AUTOSAVE_SECONDS, self.autosave)
-        self.highlight_current_lut()
         self.sync_dependent_controls()
         self.refresh_telemetry()
         current = self.state.snapshot()["lut_file"]
         if current:
+            # Set before baking so the Select's own Changed event is a no-op.
             self.lut_request = current
             self.bake_lut(current)
         else:
@@ -302,7 +329,7 @@ class CenterStageApp(App):
         """Enable each feature's controls only while that feature is on."""
         values = self.state.snapshot()
         lut_on = bool(values["lut_enabled"])
-        self.query_one("#luts", OptionList).disabled = not lut_on
+        self.query_one("#lut-select", Select).disabled = not lut_on
         self.set_tuning_disabled("lutscale", not lut_on)
         self.set_tuning_disabled("sharpen", not bool(values["sharpen_enabled"]))
 
@@ -337,28 +364,17 @@ class CenterStageApp(App):
 
     # --- LUT selection ---------------------------------------------------
 
-    def highlight_current_lut(self) -> None:
-        """Select the configured LUT in the list, if it is present."""
-        option_list = self.query_one("#luts", OptionList)
-        if not self.lut_files:
-            self.set_notice("no .cube files found in LUT/ or the current directory")
+    def on_select_changed(self, event: Select.Changed) -> None:
+        """Bake the chosen .cube file, or drop grading on a blank selection."""
+        if event.select.id != "lut-select":
             return
-        current = os.path.abspath(self.state.snapshot()["lut_file"] or "")
-        option_list.highlighted = 0
-        for index, path in enumerate(self.lut_files):
-            if path == current:
-                option_list.highlighted = index
-                break
-
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        path = event.option_id
-        if not path:
+        path = event.value
+        if not path or path == self.lut_request:
             return
         self.lut_request = path
         self.state.update(lut_file=path)
         self.set_notice(f"loading {os.path.basename(path)}")
         self.bake_lut(path)
-
     @work(thread=True, exclusive=True, group="lut")
     def bake_lut(self, path: str) -> None:
         """Bake a LUT in the background so the video stream never stalls."""

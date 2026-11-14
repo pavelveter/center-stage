@@ -460,20 +460,44 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
             app = tui.CenterStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
             async with app.run_test(size=(100, 45)) as pilot:
                 await pilot.pause()
-                self.assertTrue(app.query_one("#luts", tui.OptionList).disabled)
+                self.assertTrue(app.query_one("#lut-select", tui.Select).disabled)
                 self.assertTrue(app.query_one("#in-lutscale", tui.Input).disabled)
                 self.assertTrue(app.query_one("#in-sharpen", tui.Input).disabled)
 
                 await pilot.press("l")
                 await pilot.press("s")
                 await pilot.pause()
-                self.assertFalse(app.query_one("#luts", tui.OptionList).disabled)
+                self.assertFalse(app.query_one("#lut-select", tui.Select).disabled)
                 self.assertFalse(app.query_one("#in-lutscale", tui.Input).disabled)
                 self.assertFalse(app.query_one("#in-sharpen", tui.Input).disabled)
 
                 await pilot.press("s")
                 await pilot.pause()
                 self.assertTrue(app.query_one("#in-sharpen", tui.Input).disabled)
+        finally:
+            tracker.VideoPipeline = original
+
+    async def test_lut_select_updates_state(self):
+        import os
+        import tempfile
+
+        import tui
+
+        original = tracker.VideoPipeline
+        tracker.VideoPipeline = self.FakePipeline
+        try:
+            cfg = dict(tracker.DEFAULTS)
+            cfg["lut_file"] = ""
+            cfg["lut_enabled"] = True
+            app = tui.CenterStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
+            async with app.run_test(size=(100, 45)) as pilot:
+                await pilot.pause(0.1)
+                select = app.query_one("#lut-select", tui.Select)
+                self.assertTrue(app.lut_files)
+                select.value = app.lut_files[0]
+                await pilot.pause(0.5)
+                self.assertEqual(app.state.snapshot()["lut_file"], app.lut_files[0])
+                self.assertIsNotNone(app.state.lut_table)
         finally:
             tracker.VideoPipeline = original
 
