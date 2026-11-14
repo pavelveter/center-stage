@@ -170,7 +170,7 @@ class CenterStageApp(App):
         Binding(
             "c", "toggle_lut", "LUT", key_display="[c]", priority=True
         ),
-        Binding("h", "toggle_shader", "Shader", key_display="[h]",
+        Binding("h", "toggle_shader", "Shader", key_display="<h>",
                 priority=True),
         Binding("s", "toggle_sharpen", "Sharpen", priority=True),
         Binding("l", "toggle_time_loop", "Loop", priority=True),
