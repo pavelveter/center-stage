@@ -1,4 +1,4 @@
-"""Textual control panel for the center-stage video pipeline.
+"""Textual control panel for the hyper-stage video pipeline.
 
 The app renders telemetry and controls on the Textual event loop while
 VideoPipeline does capture, tracking and virtual-camera publishing in a daemon
@@ -67,10 +67,10 @@ def clamp_value(suffix, value):
     return int(round(value)) if isinstance(low, int) else round(value, 4)
 
 
-class CenterStageApp(App):
+class HyperStageApp(App):
     """Full-screen control panel with live telemetry and feature toggles."""
 
-    TITLE = "center-stage"
+    TITLE = "hyper-stage"
     SUB_TITLE = "virtual camera"
     CSS = """
     Screen {

@@ -213,7 +213,7 @@ class TestSaveConfig(unittest.TestCase):
         import tempfile
 
         with tempfile.TemporaryDirectory() as folder:
-            path = os.path.join(folder, "center-stage.ini")
+            path = os.path.join(folder, "hyper-stage.ini")
             with open(path, "w") as f:
                 f.write("[camera]\nindex = 2\n\n[custom]\nkeep = yes\n")
             cfg = tracker.load_config(path)
@@ -234,7 +234,7 @@ class TestSaveConfig(unittest.TestCase):
             parser.read(path)
             self.assertEqual(parser.get("custom", "keep"), "yes")
             self.assertEqual(
-                [n for n in os.listdir(folder) if n.startswith(".center-stage-")], []
+                [n for n in os.listdir(folder) if n.startswith(".hyper-stage-")], []
             )
 
     def test_effects_section_is_loaded(self):
@@ -242,7 +242,7 @@ class TestSaveConfig(unittest.TestCase):
         import tempfile
 
         with tempfile.TemporaryDirectory() as folder:
-            path = os.path.join(folder, "center-stage.ini")
+            path = os.path.join(folder, "hyper-stage.ini")
             with open(path, "w") as f:
                 f.write(
                     "[color]\nlut_enabled = true\nshader_enabled = true\n"
@@ -263,7 +263,7 @@ class TestSaveConfig(unittest.TestCase):
         import tempfile
 
         with tempfile.TemporaryDirectory() as folder:
-            path = os.path.join(folder, "center-stage.ini")
+            path = os.path.join(folder, "hyper-stage.ini")
             with open(path, "w") as f:
                 f.write("[appearance]\ntheme = textual-light\n")
             self.assertEqual(tracker.load_config(path)["theme"], "textual-light")
@@ -654,8 +654,8 @@ class TestShaderEngine(unittest.TestCase):
 
     def test_channel_directive_is_parsed(self):
         source = (
-            "// center-stage: 0=font 1=camera\n"
-            "// center-stage: 2=noise\n"
+            "// hyper-stage: 0=font 1=camera\n"
+            "// hyper-stage: 2=noise\n"
             "void mainImage(out vec4 c, in vec2 p) {}\n"
         )
         self.assertEqual(
@@ -909,16 +909,16 @@ class TestShaderEngine(unittest.TestCase):
         parse = tracker.MultiShader.parse_channels
         names = ["Buffer A.glsl", "Buffer B.glsl"]
         self.assertEqual(
-            parse("// center-stage: 1=noise 2=Buffer B", names),
+            parse("// hyper-stage: 1=noise 2=Buffer B", names),
             {1: "noise", 2: ("buffer", 1)},
         )
         # Spaces optional, case ignored.
         self.assertEqual(
-            parse("// center-stage: 0=feedback 1=bufferb", names),
+            parse("// hyper-stage: 0=feedback 1=bufferb", names),
             {0: "feedback", 1: ("buffer", 1)},
         )
         # Unknown names are ignored, leaving the default wiring.
-        self.assertEqual(parse("// center-stage: 3=webcam", names), {})
+        self.assertEqual(parse("// hyper-stage: 3=webcam", names), {})
 
     def test_multibuffer_pack_channel_directive(self):
         """A pass directive wires iChannelN to a named buffer's output."""
@@ -949,7 +949,7 @@ class TestShaderEngine(unittest.TestCase):
                     # on iChannel0; the directive makes iChannel2 carry
                     # Buffer A (red) instead.
                     "Image.glsl": (
-                        "// center-stage: 2=Buffer A\n"
+                        "// hyper-stage: 2=Buffer A\n"
                         "void mainImage(out vec4 c, in vec2 p) {\n"
                         "    c = texture(iChannel2, p / iResolution.xy);\n"
                         "}\n"
@@ -1361,7 +1361,7 @@ class TestMainCli(unittest.TestCase):
                 seen["ran"] = True
 
         path = os.path.join(tempfile.mkdtemp(), "custom.ini")
-        with mock.patch.object(tui, "CenterStageApp", FakeApp):
+        with mock.patch.object(tui, "HyperStageApp", FakeApp):
             tracker.main(
                 [
                     "--config",
@@ -1420,8 +1420,8 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
             cfg = dict(tracker.DEFAULTS)
             cfg["lut_file"] = ""
             cfg["lut_enabled"] = False
-            path = os.path.join(tempfile.mkdtemp(), "center-stage.ini")
-            app = tui.CenterStageApp(cfg, path)
+            path = os.path.join(tempfile.mkdtemp(), "hyper-stage.ini")
+            app = tui.HyperStageApp(cfg, path)
             async with app.run_test(size=(100, 45)) as pilot:
                 await pilot.pause()
                 self.assertTrue(self.FakePipeline.instances[-1].started)
@@ -1466,7 +1466,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
         try:
             cfg = dict(tracker.DEFAULTS)
             cfg["lut_file"] = ""
-            app = tui.CenterStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
+            app = tui.HyperStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
             async with app.run_test(size=(100, 45)) as pilot:
                 await pilot.pause()
                 tracking = app.query_one("#sw-tracking", tui.Switch)
@@ -1504,7 +1504,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
             cfg = dict(tracker.DEFAULTS)
             cfg["lut_file"] = ""
             cfg["magic_loop_enabled"] = True
-            app = tui.CenterStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
+            app = tui.HyperStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
             async with app.run_test(size=(100, 45)) as pilot:
                 await pilot.pause()
                 tracking = app.query_one("#sw-tracking", tui.Switch)
@@ -1533,7 +1533,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
             cfg = dict(tracker.DEFAULTS)
             cfg["lut_file"] = ""
             cfg["shader_enabled"] = False
-            app = tui.CenterStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
+            app = tui.HyperStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
             async with app.run_test(size=(100, 45)) as pilot:
                 await pilot.pause()
                 select = app.query_one("#shader-select", tui.Select)
@@ -1579,7 +1579,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
         try:
             cfg = dict(tracker.DEFAULTS)
             cfg["lut_file"] = ""
-            app = tui.CenterStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
+            app = tui.HyperStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
             async with app.run_test(size=(100, 45)) as pilot:
                 await pilot.pause()
                 pipeline = app.pipeline
@@ -1618,7 +1618,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
             cfg["lut_file"] = ""
             cfg["lut_enabled"] = False
             cfg["sharpen_enabled"] = False
-            app = tui.CenterStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
+            app = tui.HyperStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
             async with app.run_test(size=(100, 45)) as pilot:
                 await pilot.pause()
                 self.assertTrue(app.query_one("#lut-select", tui.Select).disabled)
@@ -1650,7 +1650,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
             cfg = dict(tracker.DEFAULTS)
             cfg["lut_file"] = ""
             cfg["lut_enabled"] = True
-            app = tui.CenterStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
+            app = tui.HyperStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
             async with app.run_test(size=(100, 45)) as pilot:
                 await pilot.pause(0.1)
                 select = app.query_one("#lut-select", tui.Select)
@@ -1674,7 +1674,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
             cfg = dict(tracker.DEFAULTS)
             cfg["lut_file"] = ""
             cfg["lut_enabled"] = True
-            app = tui.CenterStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
+            app = tui.HyperStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
             async with app.run_test(size=(100, 45)) as pilot:
                 await pilot.pause(0.1)
                 files = app.lut_files
@@ -1719,7 +1719,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
         try:
             cfg = dict(tracker.DEFAULTS)
             cfg["shader_file"] = ""
-            app = tui.CenterStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
+            app = tui.HyperStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
             async with app.run_test(size=(100, 45)) as pilot:
                 await pilot.pause(0.1)
                 files = app.shader_files
@@ -1758,7 +1758,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
 
         display = {
             action: binding.key_display
-            for binding in tui.CenterStageApp.BINDINGS
+            for binding in tui.HyperStageApp.BINDINGS
             if binding.key_display
             for action in (binding.action,)
         }
@@ -1778,7 +1778,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 ini = os.path.join(folder, "t.ini")
                 cfg = dict(tracker.DEFAULTS)
                 cfg["theme"] = "textual-light"
-                app = tui.CenterStageApp(cfg, ini)
+                app = tui.HyperStageApp(cfg, ini)
                 async with app.run_test(size=(80, 24)) as pilot:
                     await pilot.pause(0.1)
                     # The saved theme is applied at startup...

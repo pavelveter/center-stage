@@ -12,29 +12,6 @@ wheels = [
 ]
 
 [[package]]
-name = "center-stage"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "mediapipe" },
-    { name = "moderngl" },
-    { name = "numpy" },
-    { name = "opencv-python" },
-    { name = "pyvirtualcam" },
-    { name = "textual" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "mediapipe", specifier = ">=1.2.3" },
-    { name = "moderngl", specifier = ">=5.13.0" },
-    { name = "numpy", specifier = ">=2.5.4" },
-    { name = "opencv-python", specifier = ">=5.0.0.93" },
-    { name = "pyvirtualcam", specifier = ">=0.15.0" },
-    { name = "textual", specifier = ">=8.2.8" },
-]
-
-[[package]]
 name = "certifi"
 version = "2026.10.23"
 source = { registry = "https://pypi.org/simple" }
@@ -287,6 +264,29 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/3f/51/9609adff8384d9711452fb84ef5f66cd1721c5110411c24fd06f916a0da8/glcontext-3.1.0-cp315-cp315t-musllinux_1_2_x86_64.whl", hash = "sha256:f3eefb3a05d7ae1a1fe3a7fac5856f69a5eb72f1cce501a11d5edcdb52cb38d5", size = 46908, upload-time = "2026-10-07T10:23:44.872Z" },
     { url = "https://files.pythonhosted.org/packages/93/c0/d9acfa3a6a003ad1bf7d05e502672be592a76ed4c856fa7ca7b08e09fe19/glcontext-3.1.0-cp315-cp315t-win32.whl", hash = "sha256:394176ea4c3c1ff56882f13b886e5ea22add3843abf7fad6e8ad42a3df053424", size = 11990, upload-time = "2026-10-07T10:23:46.304Z" },
     { url = "https://files.pythonhosted.org/packages/50/2a/55ab96fda4ca184ef0b9c5cbef5ee75be119be8a1eb87c735c98de27bbe7/glcontext-3.1.0-cp315-cp315t-win_amd64.whl", hash = "sha256:f50646ea59fb3868db41ae377fb5ad2d0fcb98c97a4b3af97d2ed6f9ff8bf639", size = 12827, upload-time = "2026-10-07T10:23:47.329Z" },
+]
+
+[[package]]
+name = "hyper-stage"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "mediapipe" },
+    { name = "moderngl" },
+    { name = "numpy" },
+    { name = "opencv-python" },
+    { name = "pyvirtualcam" },
+    { name = "textual" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "mediapipe", specifier = ">=1.2.3" },
+    { name = "moderngl", specifier = ">=5.13.0" },
+    { name = "numpy", specifier = ">=2.5.4" },
+    { name = "opencv-python", specifier = ">=5.0.0.93" },
+    { name = "pyvirtualcam", specifier = ">=0.15.0" },
+    { name = "textual", specifier = ">=8.2.8" },
 ]
 
 [[package]]

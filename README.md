@@ -1,4 +1,4 @@
-# center-stage
+# hyper-stage
 
 Apple-style Center Stage for a regular webcam: tracks your face and publishes
 a cropped/zoomed view to a virtual camera.
@@ -85,7 +85,7 @@ textures carry mipmaps like Shadertoy's, so passes that `texelFetch` an
 explicit LOD (Ben-Day-Dots downsampling) work. Exports
 wired differently (e.g. `Image.glsl` reading `Buffer B` on `iChannel2`)
 take a directive comment in the pass file, e.g.
-`// center-stage: 2=Buffer B`; accepted names are `camera`, `noise`,
+`// hyper-stage: 2=Buffer B`; accepted names are `camera`, `noise`,
 `font`, `feedback` (the pass's own previous frame), and buffer pass names
 like `Buffer B` (its latest output). All four `iChannel` slots are declared
 in both single-file shaders and pack passes; a channel a pass samples
@@ -102,7 +102,7 @@ are verbatim Shadertoy imports: the camera frame is converted to RGB before
 the shader and back to BGR after, so hardcoded RGB palette colors (1bit's
 orange/purple, smiley's ASCII art) publish with their intended hues. A
 shader that expects other Shadertoy channel assets can remap channels with
-a directive comment, e.g. `// center-stage: 0=font 1=camera` - supported
+a directive comment, e.g. `// hyper-stage: 0=font 1=camera` - supported
 stand-ins are `camera` (the processed frame), `noise`, and `font` (a
 generated 16x16 ASCII glyph atlas approximating Shadertoy's font texture).
 
@@ -142,7 +142,7 @@ keys already in the file are preserved.
 
 ```sh
 uv run tracker.py --list-cameras
-uv run tracker.py --config /path/to/center-stage.ini
+uv run tracker.py --config /path/to/hyper-stage.ini
 uv run tracker.py --camera 0 --lut LUT/tarantino-warm.cube
 uv run tracker.py --no-tracking --time-loop --deep-fry
 ```
@@ -160,7 +160,7 @@ Other overrides: `--lut-scale`, `--detect-every`, `--sharpen/--no-sharpen`,
 
 ## Tuning
 
-`center-stage.ini` holds `camera`, `capture`, `tracking`, `color`, `sharpen`,
+`hyper-stage.ini` holds `camera`, `capture`, `tracking`, `color`, `sharpen`,
 `effects`, and `appearance` sections. Values changed in the TUI are written
 back there.
 

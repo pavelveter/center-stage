@@ -4,7 +4,7 @@ Captures a high-res frame, tracks face(s) with MediaPipe, and publishes a
 cropped/zoomed view to a virtual camera so video-call apps see a framed shot.
 
 The video pipeline runs in a daemon thread while tui.py renders a Textual
-control panel. Settings come from an INI file (see center-stage.ini), can be
+control panel. Settings come from an INI file (see hyper-stage.ini), can be
 changed live in the TUI, and are written back when they change.
 """
 
@@ -154,7 +154,7 @@ MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/face_detector/"
     "blaze_face_short_range/float16/latest/blaze_face_short_range.tflite"
 )
-MODEL_DIR = os.path.expanduser("~/.cache/center-stage")
+MODEL_DIR = os.path.expanduser("~/.cache/hyper-stage")
 MODEL_PATH = os.path.join(MODEL_DIR, "blaze_face_short_range.tflite")
 
 # Detection runs on a small frame: faces are still found reliably while keeping
@@ -263,11 +263,11 @@ def save_config(path, cfg):
             parser.set(section, ini_key, ini_value(value))
     os.makedirs(directory, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
-        prefix=".center-stage-", suffix=".ini", dir=directory
+        prefix=".hyper-stage-", suffix=".ini", dir=directory
     )
     try:
         with os.fdopen(fd, "w") as f:
-            f.write("; Center Stage configuration.\n")
+            f.write("; Hyper Stage configuration.\n")
             f.write("; Updated automatically when settings change in the TUI.\n\n")
             parser.write(f)
             f.flush()
@@ -286,8 +286,8 @@ def find_config_path(cli_path):
     if cli_path:
         return cli_path
     for candidate in (
-        "center-stage.ini",
-        os.path.expanduser("~/.config/center-stage.ini"),
+        "hyper-stage.ini",
+        os.path.expanduser("~/.config/hyper-stage.ini"),
     ):
         if os.path.exists(candidate):
             return candidate
@@ -1032,7 +1032,7 @@ class MultiShader:
     on macOS). Exports with other wiring (say Image.glsl reading Buffer B
     on iChannel2) add a directive comment to the pass file, e.g.
 
-        // center-stage: 2=Buffer B
+        // hyper-stage: 2=Buffer B
 
     Names: camera, noise, font, feedback (the pass's own previous frame),
     or a buffer pass name like "Buffer B" (its latest output, which may be
@@ -1064,7 +1064,7 @@ class MultiShader:
 
     @staticmethod
     def parse_channels(source, buffer_names):
-        """Map unit number -> channel name from // center-stage: directives.
+        """Map unit number -> channel name from // hyper-stage: directives.
 
         Accepts the aux names (camera/noise/font/feedback) and references
         to a buffer pass file like "Buffer B" (spaces optional, case
@@ -1072,7 +1072,7 @@ class MultiShader:
         """
         channels = {}
         for line in source.splitlines():
-            marker = line.find("center-stage:")
+            marker = line.find("hyper-stage:")
             if marker < 0:
                 continue
             matches = re.findall(
@@ -1325,7 +1325,7 @@ class ShaderEngine:
 
     # Auxiliary textures a shader can bind instead of the camera, selectable
     # per channel with a directive comment in the shader file, e.g.
-    #   // center-stage: 0=font 1=camera
+    #   // hyper-stage: 0=font 1=camera
     # Channels not mentioned default to: 0=camera, others noise (unbound
     # samplers read garbage on macOS, never black).
     AUX_KEYS = ("camera", "noise", "font")
@@ -1344,10 +1344,10 @@ class ShaderEngine:
 
     @staticmethod
     def parse_channels(source):
-        """Map unit number -> aux name from // center-stage: directives."""
+        """Map unit number -> aux name from // hyper-stage: directives."""
         channels = {}
         for line in source.splitlines():
-            marker = line.find("center-stage:")
+            marker = line.find("hyper-stage:")
             if marker < 0:
                 continue
             for unit, name in re.findall(
@@ -1525,7 +1525,7 @@ class VideoPipeline(threading.Thread):
     """
 
     def __init__(self, cfg, state, preview=False):
-        super().__init__(name="center-stage-video", daemon=True)
+        super().__init__(name="hyper-stage-video", daemon=True)
         self.cfg = cfg
         self.state = state
         self.preview = preview
@@ -1863,7 +1863,7 @@ class VideoPipeline(threading.Thread):
                 self.state.set_telemetry(fps=fps_ema, zoom=curr_zoom)
 
                 if self.preview:
-                    cv2.imshow("center-stage", out_frame)
+                    cv2.imshow("hyper-stage", out_frame)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         return
 
@@ -1991,12 +1991,12 @@ def main(argv=None):
 
     # Without an existing config, autosave creates one next to the user.
     if config_path is None:
-        config_path = os.path.abspath("center-stage.ini")
+        config_path = os.path.abspath("hyper-stage.ini")
 
     # Imported here so --list-cameras works even if the TUI stack is broken.
-    from tui import CenterStageApp
+    from tui import HyperStageApp
 
-    CenterStageApp(cfg, config_path, preview=args.preview).run()
+    HyperStageApp(cfg, config_path, preview=args.preview).run()
 
 
 if __name__ == "__main__":
