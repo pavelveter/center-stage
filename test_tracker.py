@@ -120,5 +120,331 @@ class TestSpringStep(unittest.TestCase):
         self.assertAlmostEqual(pos, target, places=3)
 
 
+class TestSaveConfig(unittest.TestCase):
+    def test_roundtrip_preserves_unknown_sections_and_writes_atomically(self):
+        import configparser
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "center-stage.ini")
+            with open(path, "w") as f:
+                f.write("[camera]\nindex = 2\n\n[custom]\nkeep = yes\n")
+            cfg = tracker.load_config(path)
+            cfg["zoom"] = 2.25
+            cfg["lut_enabled"] = False
+            cfg["time_loop_enabled"] = True
+            cfg["lut_file"] = os.path.join(folder, "LUT", "a.cube")
+            tracker.save_config(path, cfg)
+
+            reloaded = tracker.load_config(path)
+            self.assertEqual(reloaded["camera_index"], 2)
+            self.assertEqual(reloaded["zoom"], 2.25)
+            self.assertFalse(reloaded["lut_enabled"])
+            self.assertTrue(reloaded["time_loop_enabled"])
+            self.assertEqual(reloaded["lut_file"], os.path.join("LUT", "a.cube"))
+
+            parser = configparser.ConfigParser()
+            parser.read(path)
+            self.assertEqual(parser.get("custom", "keep"), "yes")
+            self.assertEqual(
+                [n for n in os.listdir(folder) if n.startswith(".center-stage-")], []
+            )
+
+    def test_effects_section_is_loaded(self):
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "center-stage.ini")
+            with open(path, "w") as f:
+                f.write("[effects]\ntime_loop = true\ndeep_fry = true\n")
+            cfg = tracker.load_config(path)
+            self.assertTrue(cfg["time_loop_enabled"])
+            self.assertTrue(cfg["deep_fry_enabled"])
+
+
+class TestSharedState(unittest.TestCase):
+    def test_update_marks_dirty_and_merges_into_config(self):
+        cfg = dict(tracker.DEFAULTS)
+        state = tracker.SharedState(cfg)
+        self.assertIsNone(state.pending_revision())
+        state.update(zoom=2.0)
+        self.assertIsNotNone(state.pending_revision())
+        self.assertEqual(state.snapshot()["zoom"], 2.0)
+        self.assertEqual(state.config(cfg)["zoom"], 2.0)
+        self.assertEqual(state.config(cfg)["fps"], cfg["fps"])
+
+    def test_telemetry_does_not_dirty_the_config(self):
+        state = tracker.SharedState(dict(tracker.DEFAULTS))
+        state.set_telemetry(fps=29.9, tracking=True)
+        self.assertIsNone(state.pending_revision())
+        self.assertEqual(state.telemetry()["fps"], 29.9)
+        self.assertTrue(state.telemetry()["tracking"])
+
+    def test_edit_during_save_stays_pending(self):
+        state = tracker.SharedState(dict(tracker.DEFAULTS))
+        state.update(zoom=2.0)
+        revision = state.pending_revision()
+        state.update(zoom=3.0)
+        state.mark_saved(revision)
+        self.assertIsNotNone(state.pending_revision())
+        state.mark_saved(state.pending_revision())
+        self.assertIsNone(state.pending_revision())
+
+    def test_unknown_setting_is_rejected(self):
+        state = tracker.SharedState(dict(tracker.DEFAULTS))
+        with self.assertRaises(KeyError):
+            state.update(no_such_setting=1)
+
+
+class TestTimeLoop(unittest.TestCase):
+    def test_records_while_off_and_replays_while_on(self):
+        loop = tracker.TimeLoop(length=3)
+        self.assertFalse(loop.ready)
+        frames = [object(), object(), object()]
+        for frame in frames:
+            self.assertIs(loop.record(frame), frame)
+        self.assertTrue(loop.ready)
+
+        self.assertIs(loop.next_frame(), frames[0])
+        self.assertIs(loop.next_frame(), frames[1])
+        self.assertIs(loop.next_frame(), frames[2])
+        self.assertIs(loop.next_frame(), frames[0])
+
+    def test_resuming_live_resets_the_playhead(self):
+        loop = tracker.TimeLoop(length=3)
+        first, second = object(), object()
+        loop.record(first)
+        loop.record(second)
+        loop.next_frame()
+        live = object()
+        loop.record(live)
+        self.assertIs(loop.next_frame(), first)
+
+
+class TestDeepFry(unittest.TestCase):
+    def test_changes_pixels_and_preserves_layout(self):
+        import numpy as np
+
+        frame = np.zeros((48, 64, 3), dtype=np.uint8)
+        frame[:, :32] = (40, 90, 200)
+        frame[:, 32:] = (210, 120, 30)
+        out = tracker.apply_deep_fry(frame)
+        self.assertEqual(out.shape, frame.shape)
+        self.assertEqual(out.dtype, np.uint8)
+        self.assertFalse((out == frame).all())
+
+
+class TestLutDiscovery(unittest.TestCase):
+    def test_scans_working_directory_and_lut_folder(self):
+        import os
+        import tempfile
+
+        old_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as folder:
+            os.makedirs(os.path.join(folder, "LUT"))
+            for relative in ("root.cube", os.path.join("LUT", "nested.cube")):
+                open(os.path.join(folder, relative), "w").close()
+            os.chdir(folder)
+            try:
+                files = tracker.list_lut_files(None)
+            finally:
+                os.chdir(old_cwd)
+        self.assertEqual(
+            [os.path.basename(path) for path in files],
+            ["nested.cube", "root.cube"],
+        )
+
+
+class TestVideoPipeline(unittest.TestCase):
+    def test_processes_frames_and_reports_telemetry(self):
+        import time
+        import types
+        from unittest import mock
+
+        import numpy as np
+
+        sent = []
+
+        class FakeCapture:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def isOpened(self):
+                return True
+
+            def set(self, *args):
+                return True
+
+            def read(self):
+                frame = np.zeros((120, 160, 3), dtype=np.uint8)
+                frame[..., 1] = 128
+                return True, frame
+
+            def release(self):
+                pass
+
+        class FakeCamera:
+            device = "Fake Virtual Camera"
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def send(self, frame):
+                sent.append(frame)
+
+            def sleep_until_next_frame(self):
+                pass
+
+        class FakeDetector:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def detect(self, image):
+                return types.SimpleNamespace(detections=[])
+
+        cfg = dict(tracker.DEFAULTS)
+        cfg.update(out_w=160, out_h=90, tracking_enabled=False, sharpen_enabled=True)
+        state = tracker.SharedState(cfg)
+        pipeline = tracker.VideoPipeline(cfg, state)
+        with (
+            mock.patch.object(tracker, "ensure_model", return_value="fake"),
+            mock.patch.object(tracker.cv2, "VideoCapture", FakeCapture),
+            mock.patch.object(tracker.pyvirtualcam, "Camera", FakeCamera),
+            mock.patch.object(
+                tracker.vision.FaceDetector,
+                "create_from_options",
+                return_value=FakeDetector(),
+            ),
+        ):
+            pipeline.start()
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                if sent and state.telemetry()["fps"] > 0:
+                    break
+                time.sleep(0.005)
+            telemetry = state.telemetry()
+            pipeline.stop()
+            pipeline.join(2.0)
+
+        self.assertFalse(pipeline.is_alive())
+        self.assertGreaterEqual(len(sent), 1)
+        self.assertEqual(sent[0].shape, (90, 160, 3))
+        self.assertEqual(telemetry["device"], "Fake Virtual Camera")
+        self.assertEqual(telemetry["status"], "running")
+        self.assertGreater(telemetry["fps"], 0.0)
+        self.assertFalse(telemetry["tracking"])
+
+
+class TestMainCli(unittest.TestCase):
+    def test_list_cameras_exits_before_the_tui(self):
+        from unittest import mock
+
+        with (
+            mock.patch.object(tracker, "list_cameras", return_value=[]) as probe,
+            mock.patch("builtins.print"),
+        ):
+            tracker.main(["--list-cameras"])
+        probe.assert_called_once()
+
+    def test_config_and_flag_overrides_reach_the_app(self):
+        import os
+        import tempfile
+        from unittest import mock
+
+        import tui
+
+        seen = {}
+
+        class FakeApp:
+            def __init__(self, cfg, config_path, preview=False):
+                seen["cfg"] = cfg
+                seen["path"] = config_path
+                seen["preview"] = preview
+
+            def run(self):
+                seen["ran"] = True
+
+        path = os.path.join(tempfile.mkdtemp(), "custom.ini")
+        with mock.patch.object(tui, "CenterStageApp", FakeApp):
+            tracker.main(
+                ["--config", path, "--no-tracking", "--time-loop", "--deep-fry"]
+            )
+        self.assertTrue(seen["ran"])
+        self.assertEqual(seen["path"], path)
+        self.assertFalse(seen["cfg"]["tracking_enabled"])
+        self.assertTrue(seen["cfg"]["time_loop_enabled"])
+        self.assertTrue(seen["cfg"]["deep_fry_enabled"])
+
+
+class TestTui(unittest.IsolatedAsyncioTestCase):
+    class FakePipeline:
+        instances = []
+
+        def __init__(self, cfg, state, preview=False):
+            self.state = state
+            self.started = False
+            self.stopped = False
+            TestTui.FakePipeline.instances.append(self)
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+
+        def join(self, timeout=None):
+            pass
+
+    async def test_shortcuts_tuning_and_autosave(self):
+        import os
+        import tempfile
+
+        import tui
+
+        original = tracker.VideoPipeline
+        tracker.VideoPipeline = self.FakePipeline
+        try:
+            cfg = dict(tracker.DEFAULTS)
+            cfg["lut_file"] = ""
+            cfg["lut_enabled"] = False
+            path = os.path.join(tempfile.mkdtemp(), "center-stage.ini")
+            app = tui.CenterStageApp(cfg, path)
+            async with app.run_test(size=(100, 45)) as pilot:
+                await pilot.pause()
+                self.assertTrue(self.FakePipeline.instances[-1].started)
+
+                await pilot.press("t")
+                await pilot.pause()
+                self.assertFalse(app.state.snapshot()["tracking_enabled"])
+
+                await pilot.press("m")
+                await pilot.pause()
+                self.assertTrue(app.state.snapshot()["time_loop_enabled"])
+
+                zoom = app.query_one("#in-zoom", tui.Input)
+                zoom.value = "2.5"
+                zoom.focus()
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertAlmostEqual(app.state.snapshot()["zoom"], 2.5)
+
+                app.autosave()
+                self.assertEqual(tracker.load_config(path)["zoom"], 2.5)
+        finally:
+            tracker.VideoPipeline = original
+
+
+
 if __name__ == "__main__":
     unittest.main()

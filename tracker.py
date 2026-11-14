@@ -3,17 +3,21 @@
 Captures a high-res frame, tracks face(s) with MediaPipe, and publishes a
 cropped/zoomed view to a virtual camera so video-call apps see a framed shot.
 
-Camera and tuning parameters can be set in an INI file (see center-stage.ini)
-and overridden on the command line.
+The video pipeline runs in a daemon thread while tui.py renders a Textual
+control panel. Settings come from an INI file (see center-stage.ini), can be
+changed live in the TUI, and are written back when they change.
 """
 
 import argparse
-import atexit
+import collections
 import configparser
 import glob
 import math
 import os
 import sys
+import tempfile
+import threading
+import time
 import urllib.request
 
 import cv2
@@ -33,6 +37,7 @@ DEFAULTS = {
     "out_w": 1920,              # published virtual-camera width
     "out_h": 1080,              # published virtual-camera height
     "fps": 30,                  # capture and virtual-camera frame rate
+    "tracking_enabled": True,   # face tracking on/off (off = base zoom, centered)
     "zoom": 1.5,                # base crop factor (higher = tighter framing)
     "max_head_height": 0.667,   # max head height as a fraction of frame height
     "head_ratio": 1.35,         # full head / face detector bbox
@@ -51,7 +56,55 @@ DEFAULTS = {
     "sharpen_strength": 0.3,    # unsharp-mask amount (0..1 looks natural)
     "sharpen_threshold": 10,    # min local contrast before sharpening kicks in
     "sharpen_sigma": 2.0,       # Gaussian blur radius for the high-pass filter
+    "time_loop_enabled": False, # replay the last second of processed frames
+    "deep_fry_enabled": False,  # high-contrast saturation + RGB channel roll
 }
+
+# Maps INI sections/keys (human-facing) to config keys (code-facing). Both
+# load_config and save_config use this single table, so reading and writing
+# settings can never drift apart.
+INI_MAP = {
+    "camera": {"index": "camera_index"},
+    "capture": {
+        "in_width": "in_w",
+        "in_height": "in_h",
+        "out_width": "out_w",
+        "out_height": "out_h",
+        "fps": "fps",
+    },
+    "tracking": {
+        "enabled": "tracking_enabled",
+        "zoom": "zoom",
+        "smoothing": "smoothing",
+        "max_head_height": "max_head_height",
+        "head_ratio": "head_ratio",
+        "zoom_response_time": "zoom_response_time",
+        "zoom_damping_ratio": "zoom_damping_ratio",
+        "zoom_deadzone": "zoom_deadzone",
+        "deadzone": "deadzone",
+        "min_detection_confidence": "min_det_conf",
+        "detect_every": "detect_every",
+    },
+    "color": {
+        "lut_enabled": "lut_enabled",
+        "lut_file": "lut_file",
+        "lut_scale": "lut_scale",
+        "lut_detail": "lut_detail",
+    },
+    "sharpen": {
+        "enabled": "sharpen_enabled",
+        "strength": "sharpen_strength",
+        "threshold": "sharpen_threshold",
+        "sigma": "sharpen_sigma",
+    },
+    "effects": {
+        "time_loop": "time_loop_enabled",
+        "deep_fry": "deep_fry_enabled",
+    },
+}
+
+# One second of processed frames at the nominal 30 FPS.
+TIME_LOOP_FRAMES = 30
 
 # Face detector model is downloaded once and cached in the user's cache dir,
 # so the repo stays free of binary assets and subsequent starts are offline.
@@ -92,45 +145,10 @@ def load_config(path):
     cfg = dict(DEFAULTS)
     if not path or not os.path.exists(path):
         return cfg
-    parser = configparser.ConfigParser()
+    parser = configparser.ConfigParser(interpolation=None)
     # A missing/unreadable file simply leaves every default in place.
     parser.read(path)
-    # Maps INI names (human-facing) to internal config keys (code-facing).
-    section_map = {
-        "camera": {"index": "camera_index"},
-        "capture": {
-            "in_width": "in_w",
-            "in_height": "in_h",
-            "out_width": "out_w",
-            "out_height": "out_h",
-            "fps": "fps",
-        },
-        "tracking": {
-            "zoom": "zoom",
-            "smoothing": "smoothing",
-            "max_head_height": "max_head_height",
-            "head_ratio": "head_ratio",
-            "zoom_response_time": "zoom_response_time",
-            "zoom_damping_ratio": "zoom_damping_ratio",
-            "zoom_deadzone": "zoom_deadzone",
-            "deadzone": "deadzone",
-            "min_detection_confidence": "min_det_conf",
-            "detect_every": "detect_every",
-        },
-        "color": {
-            "lut_enabled": "lut_enabled",
-            "lut_file": "lut_file",
-            "lut_scale": "lut_scale",
-            "lut_detail": "lut_detail",
-        },
-        "sharpen": {
-            "enabled": "sharpen_enabled",
-            "strength": "sharpen_strength",
-            "threshold": "sharpen_threshold",
-            "sigma": "sharpen_sigma",
-        },
-    }
-    for section, keys in section_map.items():
+    for section, keys in INI_MAP.items():
         if not parser.has_section(section):
             continue
         for ini_key, cfg_key in keys.items():
@@ -154,6 +172,71 @@ def load_config(path):
                             f"warning: invalid value for {section}.{ini_key}={raw!r}; using default {default}"
                         )
     return cfg
+
+
+def ini_value(value):
+    """Format a Python value the way load_config expects to read it back."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def portable_path(value, base_dir):
+    """Return a path relative to base_dir when it lives below it, else absolute.
+
+    Keeps the saved INI usable after the project folder moves, without turning
+    an intentionally external LUT path into something relative and broken.
+    """
+    if not value:
+        return value
+    absolute = os.path.abspath(value)
+    try:
+        relative = os.path.relpath(absolute, base_dir)
+    except ValueError:
+        return absolute
+    if relative == ".." or relative.startswith(".." + os.sep):
+        return absolute
+    return relative
+
+
+def save_config(path, cfg):
+    """Atomically write runtime settings back to the INI file.
+
+    Sections and keys already in the file but unknown to this program are kept;
+    every key listed in INI_MAP is overwritten. Writing to a temporary file in
+    the same directory and moving it into place with os.replace guarantees a
+    crash mid-write can never truncate the existing config.
+    """
+    directory = os.path.dirname(os.path.abspath(path))
+    parser = configparser.ConfigParser(interpolation=None)
+    if os.path.exists(path):
+        parser.read(path)
+    for section, keys in INI_MAP.items():
+        if not parser.has_section(section):
+            parser.add_section(section)
+        for ini_key, cfg_key in keys.items():
+            value = cfg[cfg_key]
+            if cfg_key == "lut_file":
+                value = portable_path(value, directory)
+            parser.set(section, ini_key, ini_value(value))
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".center-stage-", suffix=".ini", dir=directory
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write("; Center Stage configuration.\n")
+            f.write("; Updated automatically when settings change in the TUI.\n\n")
+            parser.write(f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def find_config_path(cli_path):
@@ -401,15 +484,23 @@ def resolve_lut_path(path, base_dir=None):
 
 
 def list_lut_files(primary_path):
-    """Return sorted .cube files in the folder of the given LUT (or LUT/)."""
-    folder = None
+    """Return sorted, de-duplicated .cube files usable as LUT choices.
+
+    Looks next to the configured LUT, in the current directory, and in LUT/,
+    so files dropped in either conventional place show up in the TUI list.
+    """
+    folders = []
     if primary_path:
-        folder = os.path.dirname(os.path.abspath(primary_path))
-    if not folder or not os.path.isdir(folder):
-        folder = os.path.abspath("LUT")
-    if not os.path.isdir(folder):
-        return []
-    return sorted(glob.glob(os.path.join(folder, "*.cube")))
+        folders.append(os.path.dirname(os.path.abspath(primary_path)))
+    folders.append(os.getcwd())
+    folders.append(os.path.join(os.getcwd(), "LUT"))
+    found = {}
+    for folder in folders:
+        if not os.path.isdir(folder):
+            continue
+        for path in glob.glob(os.path.join(folder, "*.cube")):
+            found.setdefault(os.path.abspath(path), None)
+    return sorted(found)
 
 
 def cycle_index(current, total, step):
@@ -419,49 +510,390 @@ def cycle_index(current, total, step):
     return (current + step) % total
 
 
-def setup_keyboard():
-    """Put the terminal in cbreak mode for single-key input.
+class SharedState:
+    """Thread-safe runtime state shared by the TUI and the video thread.
 
-    Returns the saved terminal state, or None when stdin is not a TTY (e.g. the
-    process runs in the background).
+    Tunable values and telemetry live behind one lock. The baked LUT table is
+    kept apart: the UI's background worker swaps it in while the video thread
+    picks it up on the next frame. A revision counter tracks unsaved changes so
+    the periodic autosave can never drop an edit made while it was writing.
     """
-    if not sys.stdin.isatty():
-        return None
-    try:
-        import termios
-        import tty
 
-        fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
-        tty.setcbreak(fd)
-        return old
-    except (ImportError, OSError):
-        return None
+    TUNABLE = (
+        "tracking_enabled",
+        "zoom",
+        "smoothing",
+        "lut_enabled",
+        "lut_file",
+        "lut_scale",
+        "sharpen_enabled",
+        "sharpen_strength",
+        "time_loop_enabled",
+        "deep_fry_enabled",
+    )
+
+    def __init__(self, cfg):
+        self._lock = threading.Lock()
+        self._values = {key: cfg[key] for key in self.TUNABLE}
+        self._telemetry = {
+            "fps": 0.0,
+            "zoom": float(cfg["zoom"]),
+            "tracking": False,
+            "device": "starting",
+            "status": "starting",
+        }
+        self._lut_table = None
+        self._revision = 0
+        self._saved_revision = 0
+
+    def snapshot(self):
+        """Copy of the tunable values for one frame of the video thread."""
+        with self._lock:
+            return dict(self._values)
+
+    def update(self, **values):
+        """Set tunable values and mark the config dirty."""
+        unknown = set(values) - set(self.TUNABLE)
+        if unknown:
+            raise KeyError(f"unknown tunable setting: {sorted(unknown)[0]}")
+        with self._lock:
+            for key, value in values.items():
+                if self._values[key] != value:
+                    self._values[key] = value
+                    self._revision += 1
+
+    def config(self, base):
+        """Copy of base config with the current tunable values applied."""
+        merged = dict(base)
+        with self._lock:
+            merged.update(self._values)
+        return merged
+
+    def telemetry(self):
+        """Copy of the read-only counters published by the video thread."""
+        with self._lock:
+            return dict(self._telemetry)
+
+    def set_telemetry(self, **values):
+        """Publish counters for the UI; never marks the config dirty."""
+        with self._lock:
+            self._telemetry.update(values)
+
+    @property
+    def lut_table(self):
+        """Currently active baked LUT table, or None."""
+        with self._lock:
+            return self._lut_table
+
+    def set_lut_table(self, table):
+        """Replace the active baked LUT table (cheap; consumes a reference)."""
+        with self._lock:
+            self._lut_table = table
+
+    def pending_revision(self):
+        """Revision to save, or None when everything is already persisted."""
+        with self._lock:
+            if self._revision == self._saved_revision:
+                return None
+            return self._revision
+
+    def mark_saved(self, revision):
+        """Record a successful save without hiding edits made during the write."""
+        with self._lock:
+            if revision == self._revision:
+                self._saved_revision = revision
 
 
-def restore_keyboard(old):
-    """Restore the terminal state saved by setup_keyboard()."""
-    if old is None:
-        return
-    try:
-        import termios
+class TimeLoop:
+    """One-second replay buffer of already processed frames.
 
-        termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old)
-    except (ImportError, OSError):
-        pass
+    While disabled the buffer records live output. While enabled the recorded
+    frames are replayed in order and wrap around, so the published stream
+    freezes into a seamless loop without re-running the image pipeline.
+    """
+
+    def __init__(self, length=TIME_LOOP_FRAMES):
+        self._frames = collections.deque(maxlen=length)
+        self._index = 0
+
+    @property
+    def ready(self):
+        """True once at least one processed frame has been recorded."""
+        return bool(self._frames)
+
+    def record(self, frame):
+        """Append a live frame to the buffer and return it for publishing."""
+        self._index = 0
+        self._frames.append(frame)
+        return frame
+
+    def next_frame(self):
+        """Return the next buffered frame; the caller must check ready first."""
+        frame = self._frames[self._index % len(self._frames)]
+        self._index += 1
+        return frame
 
 
-def read_keys():
-    """Return any pending keypresses as a decoded string (empty if none)."""
-    import select
+def apply_deep_fry(frame_bgr, saturation=2.0, contrast=1.3, shift=10):
+    """Exaggerated saturation/contrast plus an RGB channel roll.
 
-    if not select.select([sys.stdin], [], [], 0)[0]:
-        return ""
-    try:
-        # Read a few bytes so multi-byte UTF-8 (e.g. Russian х/ъ) stays intact.
-        return os.read(sys.stdin.fileno(), 8).decode("utf-8", "ignore")
-    except OSError:
-        return ""
+    The roll happens on the red and blue planes in opposite directions, which
+    produces the offset fringes of the classic over-processed "deep fried" look.
+    """
+    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+    hsv[..., 1] = np.clip(
+        hsv[..., 1].astype(np.float32) * float(saturation), 0, 255
+    ).astype(np.uint8)
+    graded = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    graded = np.clip(
+        (graded.astype(np.float32) - 128.0) * float(contrast) + 128.0, 0, 255
+    ).astype(np.uint8)
+    blue, green, red = cv2.split(graded)
+    red = np.roll(red, int(shift), axis=1)
+    blue = np.roll(blue, -int(shift), axis=1)
+    return cv2.merge((blue, green, red))
+
+
+def build_lut_table(path):
+    """Load and bake a .cube LUT into the runtime table; None when unusable."""
+    lut = load_lut(path)
+    return bake_lut(lut) if lut is not None else None
+
+
+class VideoPipeline(threading.Thread):
+    """Capture, detect, crop, grade and publish, isolated from the TUI thread.
+
+    The detector, capture device and virtual camera are created and used only
+    inside this daemon thread, preserving their thread affinity. All shared
+    values are read from SharedState, so the TUI can change settings at any time
+    without blocking or dropping frames.
+    """
+
+    def __init__(self, cfg, state, preview=False):
+        super().__init__(name="center-stage-video", daemon=True)
+        self.cfg = cfg
+        self.state = state
+        self.preview = preview
+        self._stop_event = threading.Event()
+
+    def stop(self):
+        """Ask the loop to exit; the thread finishes the current frame first."""
+        self._stop_event.set()
+
+    def run(self):
+        """Open the devices, run the frame loop, and always release resources."""
+        cfg = self.cfg
+        cap = None
+        try:
+            model_path = ensure_model()
+            options = vision.FaceDetectorOptions(
+                base_options=mp_python.BaseOptions(model_asset_path=model_path),
+                min_detection_confidence=cfg["min_det_conf"],
+            )
+            # Single-threaded OpenCV avoids occasional macOS crashes when its
+            # worker threads compete with MediaPipe's thread pool.
+            cv2.setNumThreads(1)
+
+            cap = cv2.VideoCapture(cfg["camera_index"], cv2.CAP_AVFOUNDATION)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg["in_w"])
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg["in_h"])
+            cap.set(cv2.CAP_PROP_FPS, cfg["fps"])
+            if not cap.isOpened():
+                self.state.set_telemetry(
+                    device="none",
+                    status=f"cannot open camera {cfg['camera_index']}; "
+                    "run --list-cameras to see indices",
+                )
+                return
+
+            with (
+                vision.FaceDetector.create_from_options(options) as detector,
+                pyvirtualcam.Camera(
+                    width=cfg["out_w"],
+                    height=cfg["out_h"],
+                    fps=int(cfg["fps"]),
+                    fmt=pyvirtualcam.PixelFormat.BGR,
+                ) as cam,
+            ):
+                self.state.set_telemetry(device=cam.device, status="running")
+                self._loop(cap, detector, cam)
+        except Exception as exc:
+            import traceback
+
+            traceback.print_exc()
+            self.state.set_telemetry(status=f"stopped: {exc}")
+        finally:
+            if cap is not None:
+                cap.release()
+            if self.preview:
+                cv2.destroyAllWindows()
+            self.state.set_telemetry(fps=0.0, tracking=False)
+
+    def _loop(self, cap, detector, cam):
+        """Frame loop; returns when stopped, when the camera dies, or on a fault."""
+        cfg = self.cfg
+        out_w, out_h = cfg["out_w"], cfg["out_h"]
+        dt = 1.0 / max(1.0, float(cfg["fps"]))
+        omega = 2.0 * math.pi / max(0.05, float(cfg["zoom_response_time"]))
+        zeta = max(0.1, float(cfg["zoom_damping_ratio"]))
+        detect_every = max(1, int(cfg["detect_every"]))
+        deadzone = float(cfg["deadzone"])
+        zoom_deadzone = float(cfg["zoom_deadzone"])
+        max_head = float(cfg["max_head_height"])
+        head_ratio = float(cfg["head_ratio"])
+
+        curr_x, curr_y = 0.5, 0.45
+        target_x, target_y = curr_x, curr_y
+        curr_zoom = target_zoom = max(1.0, float(cfg["zoom"]))
+        zoom_vel = 0.0
+        frame_idx = 0
+        consecutive_errors = 0
+        fps_ema = 0.0
+        last_time = time.monotonic()
+        time_loop = TimeLoop()
+
+        while not self._stop_event.is_set():
+            try:
+                ret, frame = cap.read()
+
+                # A camera can briefly hand back None or a malformed buffer.
+                # Skip it rather than letting downstream OpenCV calls crash.
+                if (
+                    not ret
+                    or frame is None
+                    or not isinstance(frame, np.ndarray)
+                    or frame.ndim != 3
+                    or frame.shape[2] != 3
+                ):
+                    consecutive_errors += 1
+                    if consecutive_errors > 30:
+                        self.state.set_telemetry(
+                            status="camera stopped delivering frames"
+                        )
+                        return
+                    continue
+                frame = np.ascontiguousarray(frame)
+                consecutive_errors = 0
+                state = self.state.snapshot()
+                base_zoom = max(1.0, float(state["zoom"]))
+
+                looping = bool(state["time_loop_enabled"]) and time_loop.ready
+                if looping:
+                    # Replaying the buffer skips the whole image pipeline.
+                    out_frame = time_loop.next_frame()
+                else:
+                    if not state["tracking_enabled"]:
+                        # Disabled: ease the view back to the base framing.
+                        target_x, target_y, target_zoom = 0.5, 0.45, base_zoom
+                        self.state.set_telemetry(tracking=False)
+                    elif frame_idx % detect_every == 0:
+                        small = cv2.resize(frame, (DETECT_W, DETECT_H))
+                        rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+                        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                        result = detector.detect(mp_image)
+                        centers = face_centers(result.detections, DETECT_W, DETECT_H)
+                        if centers:
+                            tx = sum(c[0] for c in centers) / len(centers)
+                            ty = sum(c[1] for c in centers) / len(centers)
+                            if abs(tx - curr_x) > deadzone:
+                                target_x = tx
+                            if abs(ty - curr_y) > deadzone:
+                                target_y = ty
+                            wanted = fit_zoom(
+                                largest_face_height(result.detections, DETECT_H),
+                                base_zoom,
+                                max_head,
+                                head_ratio,
+                            )
+                            target_zoom = pick_target_zoom(
+                                target_zoom, wanted, zoom_deadzone
+                            )
+                        self.state.set_telemetry(tracking=bool(centers))
+
+                    # Exponential moving average smooths panning even though
+                    # detection only updates every detect_every frames.
+                    smoothing = float(state["smoothing"])
+                    curr_x += (target_x - curr_x) * smoothing
+                    curr_y += (target_y - curr_y) * smoothing
+
+                    # Dolly zoom: damped spring, then clamped to the valid range.
+                    curr_zoom, zoom_vel = spring_step(
+                        curr_zoom,
+                        zoom_vel,
+                        max(1.0, min(base_zoom, target_zoom)),
+                        omega,
+                        zeta,
+                        dt,
+                    )
+                    curr_zoom = max(1.0, min(base_zoom, curr_zoom))
+
+                    # Use actual frame dimensions: the camera may negotiate a
+                    # different resolution than requested.
+                    fh, fw = frame.shape[:2]
+                    x1, y1, crop_w, crop_h = crop_origin(
+                        curr_x, curr_y, curr_zoom, fw, fh
+                    )
+                    cropped = frame[y1 : y1 + crop_h, x1 : x1 + crop_w]
+                    if crop_w < 1 or crop_h < 1 or cropped.size == 0:
+                        continue
+                    out_frame = cv2.resize(
+                        np.ascontiguousarray(cropped),
+                        (out_w, out_h),
+                        interpolation=cv2.INTER_LINEAR,
+                    )
+
+                    table = self.state.lut_table
+                    if state["lut_enabled"] and table is not None:
+                        out_frame = apply_lut(
+                            out_frame,
+                            table,
+                            scale=int(state["lut_scale"]),
+                            detail=bool(cfg["lut_detail"]),
+                        )
+                    strength = float(state["sharpen_strength"])
+                    if state["sharpen_enabled"] and strength > 0:
+                        out_frame = apply_smart_sharpen(
+                            out_frame,
+                            strength=strength,
+                            threshold=int(cfg["sharpen_threshold"]),
+                            sigma=float(cfg["sharpen_sigma"]),
+                        )
+                    if state["deep_fry_enabled"]:
+                        out_frame = apply_deep_fry(out_frame)
+
+                    out_frame = time_loop.record(out_frame)
+
+                cam.send(out_frame)
+                cam.sleep_until_next_frame()
+
+                now = time.monotonic()
+                elapsed = now - last_time
+                if elapsed > 0:
+                    measured = 1.0 / elapsed
+                    if fps_ema == 0.0:
+                        fps_ema = measured
+                    else:
+                        fps_ema = fps_ema * 0.9 + measured * 0.1
+                last_time = now
+                self.state.set_telemetry(fps=fps_ema, zoom=curr_zoom)
+
+                if self.preview:
+                    cv2.imshow("center-stage", out_frame)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        return
+
+                frame_idx += 1
+            except Exception as exc:
+                # Transient per-frame errors should not kill a call; only give
+                # up after repeated failures, printing the stack for diagnosis.
+                consecutive_errors += 1
+                if consecutive_errors > 10:
+                    import traceback
+
+                    traceback.print_exc()
+                    raise
+                print(f"warning: frame processing error ({consecutive_errors}): {exc}")
+                time.sleep(0.01)
 
 
 def parse_args(argv=None):
@@ -482,6 +914,24 @@ def parse_args(argv=None):
         "--sharpen-strength", type=float, help="sharpening amount (default 0.3)"
     )
     p.add_argument(
+        "--tracking",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="enable/disable face tracking (off = base zoom, centered)",
+    )
+    p.add_argument(
+        "--time-loop",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="replay the last second of processed video in a loop",
+    )
+    p.add_argument(
+        "--deep-fry",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="apply the deep-fry saturation and RGB channel-roll effect",
+    )
+    p.add_argument(
         "--preview", action="store_true", help="show a debug preview window (costs CPU)"
     )
     p.add_argument(
@@ -492,8 +942,9 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
+
 def main(argv=None):
-    """Run the capture -> detect -> crop -> grade -> virtual-camera pipeline."""
+    """Start the video pipeline and the Textual control panel."""
     args = parse_args(argv)
 
     # Diagnostics mode: enumerate devices and exit without touching the camera.
@@ -517,246 +968,28 @@ def main(argv=None):
         cfg["sharpen_enabled"] = args.sharpen
     if args.sharpen_strength is not None:
         cfg["sharpen_strength"] = args.sharpen_strength
+    if args.tracking is not None:
+        cfg["tracking_enabled"] = args.tracking
+    if args.time_loop is not None:
+        cfg["time_loop_enabled"] = args.time_loop
+    if args.deep_fry is not None:
+        cfg["deep_fry_enabled"] = args.deep_fry
 
     base_dir = (
         os.path.dirname(os.path.abspath(config_path)) if config_path else os.getcwd()
     )
-    # Color grading is optional. The expensive interpolation is baked into a
-    # flat lookup table once at startup; per-frame work is a single take().
-    lut_table = None
-    lut_path = resolve_lut_path(cfg["lut_file"], base_dir)
-    lut_files = list_lut_files(lut_path) if cfg.get("lut_enabled", True) else []
-    lut_index = 0
-    if lut_files:
-        try:
-            lut_index = lut_files.index(lut_path)
-        except ValueError:
-            lut_index = 0
-    if cfg.get("lut_enabled", True):
-        lut = load_lut(lut_path)
-        if lut is not None:
-            print(f"LUT loaded: {lut_path} (size {lut.shape[0]})")
-        lut_table = bake_lut(lut)  # bake once at startup
+    # Keep the configured LUT resolvable from the config folder or the working
+    # directory; the TUI lists it and the background worker bakes from it.
+    cfg["lut_file"] = resolve_lut_path(cfg["lut_file"], base_dir) or ""
 
-    camera_index = cfg["camera_index"]
-    in_w, in_h = cfg["in_w"], cfg["in_h"]
-    out_w, out_h = cfg["out_w"], cfg["out_h"]
-    fps = cfg["fps"]
-    zoom = cfg["zoom"]
-    max_head = cfg["max_head_height"]
-    head_ratio = cfg["head_ratio"]
-    zoom_response_time = max(0.05, float(cfg["zoom_response_time"]))
-    zoom_damping_ratio = max(0.1, float(cfg["zoom_damping_ratio"]))
-    zoom_deadzone = cfg["zoom_deadzone"]
-    smoothing = cfg["smoothing"]
-    deadzone = cfg["deadzone"]
-    min_det_conf = cfg["min_det_conf"]
-    detect_every = max(1, int(cfg["detect_every"]))
-    sharpen_enabled = bool(cfg["sharpen_enabled"])
-    sharpen_strength = float(cfg["sharpen_strength"])
-    sharpen_threshold = int(cfg["sharpen_threshold"])
-    sharpen_sigma = float(cfg["sharpen_sigma"])
-    preview = bool(args.preview)
+    # Without an existing config, autosave creates one next to the user.
+    if config_path is None:
+        config_path = os.path.abspath("center-stage.ini")
 
-    model_path = ensure_model()
-    base_opts = mp_python.BaseOptions(model_asset_path=model_path)
-    options = vision.FaceDetectorOptions(
-        base_options=base_opts, min_detection_confidence=min_det_conf
-    )
+    # Imported here so --list-cameras works even if the TUI stack is broken.
+    from tui import CenterStageApp
 
-    # Single-threaded OpenCV avoids occasional macOS crashes when its worker
-    # threads compete with MediaPipe's thread pool.
-    cv2.setNumThreads(1)
-
-    # Request the desired capture format; the actual delivered size may differ.
-    cap = cv2.VideoCapture(camera_index, cv2.CAP_AVFOUNDATION)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, in_w)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, in_h)
-    cap.set(cv2.CAP_PROP_FPS, fps)
-    if not cap.isOpened():
-        print(f"error: cannot open camera {camera_index}")
-        print("run with --list-cameras to see available indices")
-        sys.exit(1)
-
-    # Smoothed view state: pan center, zoom, and a frame counter that drives
-    # the detection cadence.
-    curr_x, curr_y = 0.5, 0.45
-    target_x, target_y = curr_x, curr_y
-    curr_zoom = target_zoom = zoom
-    frame_idx = 0
-    center_stage_enabled = True
-
-    # Single-key terminal controls. atexit restores echo/canonical mode even on
-    # Ctrl+C or an unhandled error.
-    old_term = setup_keyboard()
-    atexit.register(restore_keyboard, old_term)
-
-    # Context managers guarantee the detector and virtual camera are closed
-    # even when the loop exits via an error.
-    with (
-        vision.FaceDetector.create_from_options(options) as detector,
-        pyvirtualcam.Camera(
-            width=out_w, height=out_h, fps=fps, fmt=pyvirtualcam.PixelFormat.BGR
-        ) as cam,
-    ):
-        print(f"Virtual cam started: {cam.device}")
-        if preview:
-            print("Preview enabled. Press 'q' in the window to quit.")
-        else:
-            print("Running headless. Ctrl+C to stop.")
-        consecutive_errors = 0
-
-        # Critically damped spring for the dolly zoom (frame-rate independent).
-        zoom_vel = 0.0
-        dt = 1.0 / max(1.0, float(fps))
-        omega = 2.0 * math.pi / zoom_response_time
-
-        while True:
-            try:
-                ret, frame = cap.read()
-
-                # A camera can briefly hand back None or a malformed buffer.
-                # Skip it rather than letting downstream OpenCV calls crash.
-                if (
-                    not ret
-                    or frame is None
-                    or not isinstance(frame, np.ndarray)
-                    or frame.ndim != 3
-                    or frame.shape[2] != 3
-                ):
-                    consecutive_errors += 1
-                    if consecutive_errors > 30:
-                        print("error: camera stopped delivering frames; exiting")
-                        break
-                    continue
-                frame = np.ascontiguousarray(frame)
-                consecutive_errors = 0
-
-                # Keyboard controls: [ / ] (or Russian х / ъ) cycle LUTs,
-                # Enter toggles center stage on/off.
-                keys = read_keys() if old_term is not None else ""
-                if keys:
-                    if ("]" in keys or "ъ" in keys) and lut_files:
-                        lut_index = cycle_index(lut_index, len(lut_files), 1)
-                        new_lut = load_lut(lut_files[lut_index])
-                        if new_lut is not None:
-                            lut_table = bake_lut(new_lut)
-                            print(f"LUT: {os.path.basename(lut_files[lut_index])}")
-                    elif "[" in keys or "х" in keys:
-                        if lut_files:
-                            lut_index = cycle_index(lut_index, len(lut_files), -1)
-                            new_lut = load_lut(lut_files[lut_index])
-                            if new_lut is not None:
-                                lut_table = bake_lut(new_lut)
-                                print(f"LUT: {os.path.basename(lut_files[lut_index])}")
-                    if "\r" in keys or "\n" in keys:
-                        center_stage_enabled = not center_stage_enabled
-                        print(
-                            f"Center stage: {'ON' if center_stage_enabled else 'OFF'}"
-                        )
-
-                # Run face detection only every N frames; reuse last target otherwise.
-                # Skip tracking entirely when center stage is toggled off.
-                if center_stage_enabled and frame_idx % detect_every == 0:
-                    small = cv2.resize(frame, (DETECT_W, DETECT_H))
-                    rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-                    result = detector.detect(mp_image)
-                    centers = face_centers(result.detections, DETECT_W, DETECT_H)
-                    if centers:
-                        tx = sum(c[0] for c in centers) / len(centers)
-                        ty = sum(c[1] for c in centers) / len(centers)
-                        if abs(tx - curr_x) > deadzone:
-                            target_x = tx
-                        if abs(ty - curr_y) > deadzone:
-                            target_y = ty
-                        wanted = fit_zoom(
-                            largest_face_height(result.detections, DETECT_H),
-                            zoom,
-                            max_head,
-                            head_ratio,
-                        )
-                        target_zoom = pick_target_zoom(
-                            target_zoom, wanted, zoom_deadzone
-                        )
-
-                if center_stage_enabled:
-                    # Exponential moving average gives smooth panning even
-                    # though detection only updates every detect_every frames.
-                    curr_x += (target_x - curr_x) * smoothing
-                    curr_y += (target_y - curr_y) * smoothing
-
-                    # --- Dolly zoom: critically damped spring (no overshoot) ---
-                    curr_zoom, zoom_vel = spring_step(
-                        curr_zoom, zoom_vel, target_zoom,
-                        omega, zoom_damping_ratio, dt
-                    )
-                    # keep within the valid zoom range even if velocity drifts
-                    curr_zoom = max(1.0, min(zoom, curr_zoom))
-                    # ----------------------------------------------------------
-
-                    # Use actual frame dimensions: the camera may negotiate a
-                    # different resolution than requested.
-                    fh, fw = frame.shape[:2]
-                    x1, y1, crop_w, crop_h = crop_origin(
-                        curr_x, curr_y, curr_zoom, fw, fh
-                    )
-                    cropped = frame[y1 : y1 + crop_h, x1 : x1 + crop_w]
-                    if crop_w < 1 or crop_h < 1 or cropped.size == 0:
-                        continue
-                    cropped = np.ascontiguousarray(cropped)
-                    out_frame = cv2.resize(
-                        cropped, (out_w, out_h), interpolation=cv2.INTER_LINEAR
-                    )
-                else:
-                    # Center stage off: publish the whole frame un-cropped.
-                    out_frame = cv2.resize(
-                        frame, (out_w, out_h), interpolation=cv2.INTER_LINEAR
-                    )
-
-                # Color grade and sharpen the final image in both modes.
-                if lut_table is not None:
-                    out_frame = apply_lut(
-                        out_frame,
-                        lut_table,
-                        scale=cfg["lut_scale"],
-                        detail=cfg["lut_detail"],
-                    )
-                if sharpen_enabled:
-                    out_frame = apply_smart_sharpen(
-                        out_frame,
-                        strength=sharpen_strength,
-                        threshold=sharpen_threshold,
-                        sigma=sharpen_sigma,
-                    )
-
-                # Publish and pace the loop to the virtual camera's frame rate.
-                cam.send(out_frame)
-                cam.sleep_until_next_frame()
-
-                if preview:
-                    cv2.imshow("center-stage", out_frame)
-                    if cv2.waitKey(1) & 0xFF == ord("q"):
-                        break
-
-                frame_idx += 1
-            except KeyboardInterrupt:
-                raise
-            except Exception as e:
-                # Transient per-frame errors should not kill a call; only give
-                # up after repeated failures, printing the stack for diagnosis.
-                consecutive_errors += 1
-                print(f"warning: frame processing error ({consecutive_errors}): {e}")
-                if consecutive_errors > 10:
-                    import traceback
-
-                    traceback.print_exc()
-                    break
-                continue
-
-    cap.release()
-    if preview:
-        cv2.destroyAllWindows()
+    CenterStageApp(cfg, config_path, preview=args.preview).run()
 
 
 if __name__ == "__main__":
