@@ -32,25 +32,26 @@ the footer key hints. Tuning fields accept a typed value on `Enter`.
 
 ## Panels
 
-The screen is a two-column layout of two bordered panels of equal height:
+The screen is a single centered column (max 72 columns wide) with two blocks:
 
-- **Left: TELEMETRY / TUNING** - measured FPS, current zoom, `TRACKING`/`IDLE`
-  face status, the active virtual-camera device, the pipeline status, and the
-  live `zoom` and `smoothing` tuners.
-- **Right: IMAGE PROCESSING & FEATURES** - one sidebar with three sub-blocks:
-  - *LUT* - the `LUT Grading` switch, the `.cube` dropdown on its own full-width
-    row (every file found in `LUT/` and the working directory at startup), and
-    the `Intensity / Scale` tuner beneath. Switching grading off dims and
-    disables the dropdown and the scale control.
-  - *SHARPEN* - the `Smart Sharpen` switch with its `Strength` tuner; the tuner
-    is disabled while sharpening is off.
-  - *FEATURES* - switches for Face Tracking, the Time Loop (30-frame ring
-    buffer replayed as a seamless loop), and Deep Fry / Glitch (boosted
-    saturation/contrast with an RGB channel roll).
+- **TELEMETRY** - one line with FPS, zoom, `TRACKING`/`IDLE`, and the active
+  virtual camera (or the pipeline status when something is wrong), plus a
+  dimmed notice line underneath.
+- **CONTROLS** - every feature on one tight row: the switch inline with its
+  numeric tuner (`-`, value, `+`) on the same line:
+  - *Face Tracking* with the `Zoom` tuner.
+  - *Pan Smoothing* tuner.
+  - *LUT Grading* with the `Scale` tuner, and the `.cube` dropdown full-width
+    directly below (every file found in `LUT/` and the working directory at
+    startup). Switching grading off dims and disables the dropdown and the
+    scale control.
+  - *Smart Sharpen* with the `Strength` tuner; the tuner is disabled while
+    sharpening is off.
+  - *Time Loop (1s)* - replays a 30-frame ring buffer as a seamless loop.
+  - *Deep Fry / Glitch* - boosted saturation/contrast with an RGB channel roll.
 
-On narrow terminals the two panels stack vertically. Picking a `.cube` file in
-the dropdown bakes its 128^3 lookup table in a background worker, so the video
-stream never stalls.
+Picking a `.cube` file in the dropdown bakes its 128^3 lookup table in a
+background worker, so the video stream never stalls.
 
 Disabling face tracking eases the view back to the base zoom, centered at
 `0.5, 0.45`, using the same spring/EMA smoothing as tracking.

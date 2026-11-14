@@ -41,9 +41,9 @@ SWITCHES = {
 # Integer bounds mean an integer setting (LUT scale), floats otherwise.
 TUNING = {
     "zoom": ("Zoom", "zoom", 1.0, 4.0, 0.05),
-    "smoothing": ("Smoothing", "smoothing", 0.01, 0.30, 0.01),
+    "smoothing": ("Pan Smoothing", "smoothing", 0.01, 0.30, 0.01),
     "sharpen": ("Strength", "sharpen_strength", 0.0, 1.0, 0.05),
-    "lutscale": ("Intensity / Scale", "lut_scale", 2, 16, 1),
+    "lutscale": ("Scale", "lut_scale", 2, 16, 1),
 }
 
 AUTOSAVE_SECONDS = 5.0
@@ -70,33 +70,15 @@ class CenterStageApp(App):
     TITLE = "center-stage"
     SUB_TITLE = "virtual camera"
     CSS = """
-    #body {
-        height: 1fr;
-        padding: 0 1;
+    Screen {
+        align-horizontal: center;
     }
-    #body.compact {
-        layout: vertical;
-    }
-    #left {
-        width: 1fr;
-        height: 1fr;
-    }
-    #right {
-        width: 1fr;
-        height: 1fr;
-        layout: vertical;
-    }
-    #body.compact #left,
-    #body.compact #right {
-        height: auto;
-    }
-    .sidebar {
+    #panel {
+        width: 100%;
+        max-width: 72;
         height: 1fr;
         border: round $primary;
         padding: 0 1 1 1;
-    }
-    #body.compact .sidebar {
-        height: auto;
     }
     .panel-title {
         color: $accent;
@@ -106,42 +88,47 @@ class CenterStageApp(App):
     .panel-title.first {
         margin-top: 0;
     }
-    .sub-title {
-        color: $text-muted;
-        text-style: bold;
-        margin-top: 1;
-    }
-    #body.compact .sub-title {
-        margin-top: 0;
-    }
     #telemetry-body {
-        padding: 1 0;
+        height: 1;
     }
     .notice {
         color: $text-muted;
-        height: auto;
+        height: 1;
     }
     .row {
-        height: auto;
-        align-vertical: middle;
+        height: 1;
     }
-    .row .name {
-        width: 22;
+    .name {
+        width: 18;
     }
     .row Switch {
-        margin-left: 1;
-    }
-    .row Input {
-        width: 12;
+        width: 6;
         height: 1;
+        padding: 0;
         border: none;
+        margin: 0;
+    }
+    .switch-spacer {
+        width: 6;
+    }
+    .tuner-name {
+        width: 9;
+        color: $text-muted;
     }
     .row Button {
-        width: 5;
+        width: 3;
         min-width: 3;
         height: 1;
         border: none;
         background: $surface-lighten-2;
+        margin: 0;
+    }
+    .row Input {
+        width: 8;
+        height: 1;
+        border: none;
+        padding: 0 1;
+        margin: 0 1;
     }
     #lut-select {
         width: 1fr;
@@ -177,14 +164,30 @@ class CenterStageApp(App):
         self.lut_files = tracker.list_lut_files(cfg["lut_file"])
         self.lut_request = ""
 
-    def tuning_row(self, suffix, values):
-        """Yield one labelled minus/input/plus row for a tuning setting."""
-        label, key, _, _, _ = TUNING[suffix]
+    def tuner_controls(self, suffix, values, name=None):
+        """Yield an optional mini-label plus the minus/input/plus controls."""
+        _, key, _, _, _ = TUNING[suffix]
+        if name is not None:
+            yield Label(name, classes="tuner-name")
+        yield Button("-", id=f"dec-{suffix}")
+        yield Input(value=format_value(suffix, values[key]), id=f"in-{suffix}")
+        yield Button("+", id=f"inc-{suffix}")
+
+    def switch_row(self, label, widget_id, values, tuner=None, tuner_name=None):
+        """Yield one inline row: label, switch (or spacer), optional tuner."""
         with Horizontal(classes="row"):
             yield Label(label, classes="name")
-            yield Button("-", id=f"dec-{suffix}")
-            yield Input(value=format_value(suffix, values[key]), id=f"in-{suffix}")
-            yield Button("+", id=f"inc-{suffix}")
+            if widget_id is None:
+                yield Static("", classes="switch-spacer")
+            else:
+                key = SWITCHES[widget_id][1]
+                yield Switch(value=bool(values[key]), id=widget_id)
+            if tuner is not None:
+                yield from self.tuner_controls(
+                    tuner,
+                    values,
+                    name=TUNING[tuner][0] if tuner_name is None else tuner_name,
+                )
 
     def lut_options(self):
         """(label, path) pairs for the LUT dropdown, blank included."""
@@ -195,46 +198,33 @@ class CenterStageApp(App):
         current = os.path.abspath(values["lut_file"] or "")
         selected = current if current in self.lut_files else Select.NULL
         yield Header()
-        with Horizontal(id="body"):
-            with Vertical(classes="sidebar", id="left"):
-                yield Static("TELEMETRY", classes="panel-title first")
-                yield Static(id="telemetry-body")
-                yield Static("starting", id="notice", classes="notice")
-                yield Static("TUNING", classes="sub-title")
-                yield from self.tuning_row("zoom", values)
-                yield from self.tuning_row("smoothing", values)
-            with Vertical(classes="sidebar", id="right"):
-                yield Static(
-                    "IMAGE PROCESSING & FEATURES", classes="panel-title first"
-                )
-                yield Static("LUT", classes="sub-title")
-                with Horizontal(classes="row"):
-                    yield Label("LUT Grading", classes="name")
-                    yield Switch(value=bool(values["lut_enabled"]), id="sw-lut")
-                yield Select(
-                    self.lut_options(),
-                    value=selected,
-                    prompt="LUT .cube",
-                    allow_blank=True,
-                    compact=True,
-                    type_to_search=False,
-                    id="lut-select",
-                )
-                yield from self.tuning_row("lutscale", values)
-                yield Static("SHARPEN", classes="sub-title")
-                with Horizontal(classes="row"):
-                    yield Label("Smart Sharpen", classes="name")
-                    yield Switch(
-                        value=bool(values["sharpen_enabled"]), id="sw-sharpen"
-                    )
-                yield from self.tuning_row("sharpen", values)
-                yield Static("FEATURES", classes="sub-title")
-                for widget_id, (label, key) in SWITCHES.items():
-                    if widget_id in ("sw-lut", "sw-sharpen"):
-                        continue
-                    with Horizontal(classes="row"):
-                        yield Label(label, classes="name")
-                        yield Switch(value=bool(values[key]), id=widget_id)
+        with Vertical(id="panel"):
+            yield Static("TELEMETRY", classes="panel-title first")
+            yield Static("", id="telemetry-body")
+            yield Static("starting", id="notice", classes="notice")
+            yield Static("CONTROLS", classes="panel-title")
+            yield from self.switch_row(
+                "Face Tracking", "sw-tracking", values, tuner="zoom"
+            )
+            # No switch on this row: spacers keep the tuner columns aligned.
+            yield from self.switch_row("Pan Smoothing", None, values, tuner="smoothing", tuner_name="")
+            yield from self.switch_row(
+                "LUT Grading", "sw-lut", values, tuner="lutscale"
+            )
+            yield Select(
+                self.lut_options(),
+                value=selected,
+                prompt="LUT .cube",
+                allow_blank=True,
+                compact=True,
+                type_to_search=False,
+                id="lut-select",
+            )
+            yield from self.switch_row(
+                "Smart Sharpen", "sw-sharpen", values, tuner="sharpen"
+            )
+            yield from self.switch_row("Time Loop (1s)", "sw-loop", values)
+            yield from self.switch_row("Deep Fry / Glitch", "sw-fry", values)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -259,18 +249,16 @@ class CenterStageApp(App):
     # --- telemetry -------------------------------------------------------
 
     def refresh_telemetry(self) -> None:
-        """Repaint the counters from the shared telemetry snapshot."""
+        """Repaint the single telemetry line from the shared snapshot."""
         values = self.state.telemetry()
         tracking = "TRACKING" if values["tracking"] else "IDLE"
-        lines = [
-            f"FPS            {values['fps']:5.1f}",
-            f"Zoom           {values['zoom']:.2f}x",
-            f"Face tracking  {tracking}",
-            f"Virtual camera {values['device']}",
-            f"Status         {values['status']}",
-        ]
+        info = values["device"] if values["status"] == "running" else values["status"]
+        line = (
+            f"FPS {values['fps']:.1f} | Zoom {values['zoom']:.2f}x | "
+            f"{tracking} | {info}"
+        )
         try:
-            self.query_one("#telemetry-body", Static).update("\n".join(lines))
+            self.query_one("#telemetry-body", Static).update(line)
         except NoMatches:
             # A shutdown tick can fire after the DOM is gone.
             pass
@@ -281,10 +269,6 @@ class CenterStageApp(App):
             self.query_one("#notice", Static).update(message)
         except NoMatches:
             pass
-
-    def on_resize(self, event) -> None:
-        """Stack the panels vertically on narrow terminals."""
-        self.query_one("#body").set_class(event.size.width < 88, "compact")
 
     # --- persistence -----------------------------------------------------
 
