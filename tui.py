@@ -170,7 +170,8 @@ class CenterStageApp(App):
         Binding(
             "c", "toggle_lut", "LUT", key_display="[c]", priority=True
         ),
-        Binding("h", "toggle_shader", "Shader", priority=True),
+        Binding("h", "toggle_shader", "Shader", key_display="[h]",
+                priority=True),
         Binding("s", "toggle_sharpen", "Sharpen", priority=True),
         Binding("l", "toggle_time_loop", "Loop", priority=True),
         Binding("m", "toggle_magic_loop", "Magic", priority=True),
@@ -179,8 +180,11 @@ class CenterStageApp(App):
         # LUT cycling stays bound but is not shown in the footer.
         Binding("]", "next_lut", show=False, priority=True),
         Binding("[", "prev_lut", show=False, priority=True),
-        # Russian layout equivalents: c/l/m sit on с/д/ь and the bracket keys
-        # on ъ/х under the ЙЦУКЕН layout.
+        # Shader cycling, hidden like the LUT bracket keys.
+        Binding(">", "next_shader", show=False, priority=True),
+        Binding("<", "prev_shader", show=False, priority=True),
+        # Russian layout equivalents: c/h/l/m sit on с/р/д/ь, the bracket
+        # keys on ъ/х, and the angle-bracket keys on ю/б under ЙЦУКЕН.
         Binding("с", "toggle_lut", show=False, priority=True),
         Binding("р", "toggle_shader", show=False, priority=True),
         Binding("к", "reload_files", show=False, priority=True),
@@ -188,6 +192,8 @@ class CenterStageApp(App):
         Binding("ь", "toggle_magic_loop", show=False, priority=True),
         Binding("ъ", "next_lut", show=False, priority=True),
         Binding("х", "prev_lut", show=False, priority=True),
+        Binding("ю", "next_shader", show=False, priority=True),
+        Binding("б", "prev_shader", show=False, priority=True),
     ]
 
     def __init__(self, cfg, config_path, preview=False):
@@ -506,6 +512,34 @@ class CenterStageApp(App):
 
     def action_prev_lut(self) -> None:
         self.cycle_lut(-1)
+
+    def cycle_shader(self, step: int) -> None:
+        """Select the next/previous .glsl file for the video pipeline."""
+        if not self.shader_files:
+            self.set_notice(
+                "no .glsl shaders found in shaders/ or the current directory"
+            )
+            return
+        current = self.state.snapshot()["shader_file"]
+        try:
+            index = self.shader_files.index(current)
+        except ValueError:
+            # Nothing selected yet: move to the first file going forward and
+            # to the last one going backward.
+            index = -1 if step > 0 else 0
+        next_index = tracker.cycle_index(index, len(self.shader_files), step)
+        path = self.shader_files[next_index]
+        if path == current and current:
+            return
+        self.state.update(shader_file=path)
+        self.query_one("#shader-select", Select).value = path
+        self.set_notice(f"shader: {os.path.basename(path)}")
+
+    def action_next_shader(self) -> None:
+        self.cycle_shader(1)
+
+    def action_prev_shader(self) -> None:
+        self.cycle_shader(-1)
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """Bake the chosen .cube file, or drop grading on a blank selection."""

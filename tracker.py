@@ -887,6 +887,7 @@ uniform vec4 iMouse;
 #define iChannel1 texture1
 #define iChannel2 texture2
 #define iChannel3 texture3
+uniform vec3 iChannelResolution[4];
 {user_source}
 out vec4 out_Color;
 void main() {{
@@ -895,6 +896,32 @@ void main() {{
     out_Color = color;
 }}
 """
+
+
+def set_channel_resolution(program, textures):
+    """Upload Shadertoy's iChannelResolution[4] from the bound textures.
+
+    Defensive like the other uniforms: a program that never reads it has it
+    optimized out. The Apple GL driver reports array_length as the highest
+    referenced element index + 1, so upload exactly that many rows (packed
+    arrays cannot skip elements).
+    """
+    if "iChannelResolution" not in program:
+        return
+    uniform = program["iChannelResolution"]
+    length = uniform.array_length
+    if length <= 0:
+        return
+    rows = [
+        (float(tex.width), float(tex.height), 1.0)
+        for tex in textures[:length]
+        if tex is not None
+    ]
+    rows.extend([(0.0, 0.0, 1.0)] * (length - len(rows)))
+    if length == 1:
+        uniform.value = rows[0]
+    else:
+        uniform.value = rows
 
 
 def list_shader_files(primary_path):
@@ -1093,6 +1120,7 @@ class MultiShader:
 
     def _bind_channels(self, program, channels, pass_index):
         """Bind all four samplers, defaults included, for one pass."""
+        bound = []
         for unit in range(4):
             name = channels.get(
                 unit, self._default_channel(pass_index, unit)
@@ -1102,6 +1130,7 @@ class MultiShader:
                 # Unknown/unresolvable names (or an aux that could not be
                 # created) fall back to noise; unbound reads garbage.
                 tex = self._aux_texture("noise")
+            bound.append(tex)
             tex.use(unit)
             sampler = (
                 program[f"texture{unit}"]
@@ -1110,6 +1139,7 @@ class MultiShader:
             )
             if sampler is not None:
                 sampler.value = unit
+        set_channel_resolution(program, bound)
 
     def build(self):
         """Compile every pass; None (after a warning) on any failure."""
@@ -1208,6 +1238,10 @@ class MultiShader:
             # feedback and the old feedback becomes the render target.
             textures.append(textures.pop(0))
             fbos.append(fbos.pop(0))
+            # Shadertoy keeps mipmaps on its buffer textures; passes that
+            # texelFetch an explicit LOD (Ben-Day-Dots downsampling) read
+            # black from a level that does not exist without this.
+            textures[1].build_mipmaps()
         program, quad, channels = self._final
         self._bind_channels(program, channels, len(self._passes))
         self._set_clock(program)
@@ -1374,17 +1408,20 @@ class ShaderEngine:
         # hues. Pass-through shaders are unaffected - both swaps cancel.
         rgb_in = cv2.cvtColor(cv2.flip(frame_bgr, 0), cv2.COLOR_BGR2RGB)
         self._texture.write(rgb_in)
+        bound = []
         for unit in range(4):
             name = channels.get(unit, "camera" if unit == 0 else "noise")
             # The camera texture on the requested unit; auxiliary stand-ins
             # (noise/font) for decorative channels. Unbound samplers read
             # garbage on macOS, so every declared unit gets a real texture.
             tex = self._texture if name == "camera" else self._aux_texture(name)
+            bound.append(tex)
             if tex is not None:
                 tex.use(unit)
             sampler = program[f"texture{unit}"] if f"texture{unit}" in program else None
             if sampler is not None:
                 sampler.value = unit
+        set_channel_resolution(program, bound)
         if "iResolution" in program:
             program["iResolution"].value = (float(width), float(height))
         if "iTime" in program:

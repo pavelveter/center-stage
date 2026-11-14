@@ -30,6 +30,7 @@ thread has opened the camera and the virtual-camera backend.
 | `r` | rescan `LUT/` and `shaders/` folders and reload the active files (Russian layout: `к`) |
 | `f` | toggle deep fry / glitch |
 | `]` / `[` | cycle to the next / previous `.cube` LUT (not shown in the footer; Russian layout: `ъ` / `х`) |
+| `>` / `<` | cycle to the next / previous `.glsl` shader (not shown in the footer; Russian layout: `ю` / `б`) |
 
 Everything is clickable: switches, the LUT list, the `-`/`+` tuning buttons, and
 the footer key hints. Tuning fields accept a typed value on `Enter`.
@@ -79,7 +80,9 @@ each following pass reads the previous pass output, every buffer's
 visible frame (reading the last buffer on `iChannel0`). Buffer targets are
 float (RGBA16F) like Shadertoy's, so passes can carry negative/fractional
 data (e.g. the Lucas-Kanade optical flow pack), and the camera frame is
-converted to RGB for the pack, matching Shadertoy's channel order. Exports
+converted to RGB for the pack, matching Shadertoy's channel order. Buffer
+textures carry mipmaps like Shadertoy's, so passes that `texelFetch` an
+explicit LOD (Ben-Day-Dots downsampling) work. Exports
 wired differently (e.g. `Image.glsl` reading `Buffer B` on `iChannel2`)
 take a directive comment in the pass file, e.g.
 `// center-stage: 2=Buffer B`; accepted names are `camera`, `noise`,
@@ -87,9 +90,10 @@ take a directive comment in the pass file, e.g.
 like `Buffer B` (its latest output). All four `iChannel` slots are declared
 in both single-file shaders and pack passes; a channel a pass samples
 without a directive defaults to the noise texture (unbound samplers read
-garbage on macOS). Note desktop GL, unlike Shadertoy's WebGL, does not
-zero-initial local variables - Shadertoy imports relying on that need a
-zero-init (see `Pixel-Art.glsl`).
+garbage on macOS). Shadertoy's `iChannelResolution[4]` uniform is provided
+too, sized from the bound texture of each channel. Note desktop GL, unlike
+Shadertoy's WebGL, does not zero-initial local variables - Shadertoy
+imports relying on that need a zero-init (see `Pixel-Art.glsl`).
 
 Single-file imports also get `iMouse` (always zero - drag interactions are
 not available), and `iChannel1` defaults to a generated RGBA noise texture

@@ -894,6 +894,87 @@ class TestShaderEngine(unittest.TestCase):
             self.assertTrue((out == frame).all())
             self.assertIn(pack_dir, engine._broken)
 
+    def test_ichannel_resolution_reports_texture_size(self):
+        """Shadertoy's iChannelResolution uniform carries the texture size."""
+        import os
+        import tempfile
+
+        import numpy as np
+
+        path = None
+        engine = tracker.ShaderEngine()
+        frame = np.zeros((30, 40, 3), dtype=np.uint8)
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                path = os.path.join(folder, "res.glsl")
+                with open(path, "w") as f:
+                    f.write(
+                        "void mainImage(out vec4 c, in vec2 p) {\n"
+                        "    vec2 res = iChannelResolution[0].xy;\n"
+                        "    c = vec4(res / vec2(40.0, 30.0), 0.0, 1.0);\n"
+                        "}\n"
+                    )
+                out = engine.apply(frame, path)
+        except Exception:
+            self.skipTest("no usable GPU context in this environment")
+        finally:
+            if engine._ctx is not None:
+                engine._ctx.release()
+        self.assertNotIn(path, engine._broken)
+        # res / (40, 30) == (1, 1) -> RGB (1, 1, 0), published as BGR
+        # (0, 255, 255) by the verbatim-import round trip.
+        self.assertEqual(int(out[5, 5, 0]), 0)
+        self.assertEqual(int(out[5, 5, 1]), 255)
+        self.assertEqual(int(out[5, 5, 2]), 255)
+
+    def test_pack_pass_texel_fetch_lod_reads_mipmaps(self):
+        """Pack buffers carry mipmaps so explicit-LOD fetches work."""
+        import os
+        import tempfile
+
+        import numpy as np
+
+        pack_dir = None
+        engine = tracker.ShaderEngine()
+        frame = np.full((32, 32, 3), 200, dtype=np.uint8)
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                pack_dir = os.path.join(folder, "pack.glsl")
+                os.makedirs(pack_dir)
+                passes = {
+                    "Buffer A.glsl": (
+                        "void mainImage(out vec4 c, in vec2 p) {\n"
+                        "    c = texture(iChannel0, p / iResolution.xy);\n"
+                        "}\n"
+                    ),
+                    # LOD-1 fetch of Buffer A: black without mipmaps, the
+                    # 2x2-averaged gray with them.
+                    "Buffer B.glsl": (
+                        "void mainImage(out vec4 c, in vec2 p) {\n"
+                        "    c = texelFetch(iChannel0, ivec2(0), 1);\n"
+                        "}\n"
+                    ),
+                    "Image.glsl": (
+                        "void mainImage(out vec4 c, in vec2 p) {\n"
+                        "    c = texelFetch(iChannel0, ivec2(p), 0);\n"
+                        "}\n"
+                    ),
+                }
+                for name, source in passes.items():
+                    with open(os.path.join(pack_dir, name), "w") as f:
+                        f.write(source)
+                out = engine.apply(frame, pack_dir)
+        except Exception:
+            self.skipTest("no usable GPU context in this environment")
+        finally:
+            if engine._ctx is not None and engine._programs.get(pack_dir):
+                engine._programs[pack_dir].close()
+            if engine._ctx is not None:
+                engine._ctx.release()
+        self.assertNotIn(pack_dir, engine._broken)
+        # 200/255 through mip levels stays ~0.784; published BGR ~200 again.
+        self.assertAlmostEqual(int(out[5, 5, 0]), 200, delta=4)
+
     def test_single_file_ichannel2_reads_noise(self):
         """iChannel2+ compile and bind noise instead of unbound garbage."""
         import os
@@ -1522,6 +1603,63 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.state.snapshot()["lut_file"], files[-1])
         finally:
             tracker.VideoPipeline = original
+
+    async def test_angle_bracket_keys_cycle_shaders(self):
+        import os
+        import tempfile
+
+        import tui
+
+        original = tracker.VideoPipeline
+        tracker.VideoPipeline = self.FakePipeline
+        try:
+            cfg = dict(tracker.DEFAULTS)
+            cfg["shader_file"] = ""
+            app = tui.CenterStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
+            async with app.run_test(size=(100, 45)) as pilot:
+                await pilot.pause(0.1)
+                files = app.shader_files
+                self.assertTrue(files)
+
+                await pilot.press(">")
+                await pilot.pause(0.3)
+                self.assertEqual(app.state.snapshot()["shader_file"], files[0])
+
+                await pilot.press(">")
+                await pilot.pause(0.3)
+                self.assertEqual(app.state.snapshot()["shader_file"], files[1])
+
+                await pilot.press("<")
+                await pilot.pause(0.3)
+                self.assertEqual(app.state.snapshot()["shader_file"], files[0])
+
+                # Russian layout equivalents: the key where > sits on a Russian
+                # keyboard produces ю (next) and < produces б (previous).
+                await pilot.press("ю")
+                await pilot.pause(0.3)
+                self.assertEqual(app.state.snapshot()["shader_file"], files[1])
+                await pilot.press("б")
+                await pilot.pause(0.3)
+                self.assertEqual(app.state.snapshot()["shader_file"], files[0])
+
+                # Going backward from the first file wraps to the last.
+                await pilot.press("<")
+                await pilot.pause(0.3)
+                self.assertEqual(app.state.snapshot()["shader_file"], files[-1])
+        finally:
+            tracker.VideoPipeline = original
+
+    def test_shader_binding_shows_in_footer_as_h(self):
+        import tui
+
+        display = {
+            action: binding.key_display
+            for binding in tui.CenterStageApp.BINDINGS
+            if binding.key_display
+            for action in (binding.action,)
+        }
+        self.assertEqual(display.get("toggle_shader"), "[h]")
+        self.assertEqual(display.get("toggle_lut"), "[c]")
 
 
 
