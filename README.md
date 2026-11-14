@@ -37,12 +37,11 @@ The screen is a two-column layout of two bordered panels of equal height:
 - **Left: TELEMETRY / TUNING** - measured FPS, current zoom, `TRACKING`/`IDLE`
   face status, the active virtual-camera device, the pipeline status, and the
   live `zoom` and `smoothing` tuners.
-- **Right: IMAGE PROCESSING & FEATURES** - one sidebar with three sub-blocks
-  separated by rules:
-  - *LUT* - the `LUT Grading` switch and the `.cube` dropdown (every file found
-    in `LUT/` and the working directory at startup) on one row, with the
-    `Intensity / Scale` tuner beneath. Switching grading off dims and disables
-    the dropdown and the scale control.
+- **Right: IMAGE PROCESSING & FEATURES** - one sidebar with three sub-blocks:
+  - *LUT* - the `LUT Grading` switch, the `.cube` dropdown on its own full-width
+    row (every file found in `LUT/` and the working directory at startup), and
+    the `Intensity / Scale` tuner beneath. Switching grading off dims and
+    disables the dropdown and the scale control.
   - *SHARPEN* - the `Smart Sharpen` switch with its `Strength` tuner; the tuner
     is disabled while sharpening is off.
   - *FEATURES* - switches for Face Tracking, the Time Loop (30-frame ring

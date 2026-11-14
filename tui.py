@@ -19,7 +19,6 @@ from textual.widgets import (
     Header,
     Input,
     Label,
-    Rule,
     Select,
     Static,
     Switch,
@@ -85,6 +84,7 @@ class CenterStageApp(App):
     #right {
         width: 1fr;
         height: 1fr;
+        layout: vertical;
     }
     #body.compact #left,
     #body.compact #right {
@@ -110,6 +110,9 @@ class CenterStageApp(App):
         color: $text-muted;
         text-style: bold;
         margin-top: 1;
+    }
+    #body.compact .sub-title {
+        margin-top: 0;
     }
     #telemetry-body {
         padding: 1 0;
@@ -142,20 +145,15 @@ class CenterStageApp(App):
     }
     #lut-select {
         width: 1fr;
-        margin-left: 1;
-        min-width: 16;
         height: 1;
         border: none;
         background: $surface-lighten-2;
+        margin-bottom: 1;
     }
     #lut-select SelectCurrent {
         border: none !important;
         height: 1;
         padding: 0 1;
-    }
-    .rule {
-        margin: 1 0;
-        color: $primary-darken-1;
     }
     """
     # priority bindings keep the shortcuts working while a tuning input or the
@@ -205,31 +203,31 @@ class CenterStageApp(App):
                 yield Static("TUNING", classes="sub-title")
                 yield from self.tuning_row("zoom", values)
                 yield from self.tuning_row("smoothing", values)
-            with VerticalScroll(classes="sidebar", id="right"):
+            with Vertical(classes="sidebar", id="right"):
                 yield Static(
                     "IMAGE PROCESSING & FEATURES", classes="panel-title first"
                 )
+                yield Static("LUT", classes="sub-title")
                 with Horizontal(classes="row"):
                     yield Label("LUT Grading", classes="name")
                     yield Switch(value=bool(values["lut_enabled"]), id="sw-lut")
-                    yield Select(
-                        self.lut_options(),
-                        value=selected,
-                        prompt="LUT .cube",
-                        allow_blank=True,
-                        compact=True,
-                        type_to_search=False,
-                        id="lut-select",
-                    )
+                yield Select(
+                    self.lut_options(),
+                    value=selected,
+                    prompt="LUT .cube",
+                    allow_blank=True,
+                    compact=True,
+                    type_to_search=False,
+                    id="lut-select",
+                )
                 yield from self.tuning_row("lutscale", values)
-                yield Rule(classes="rule")
+                yield Static("SHARPEN", classes="sub-title")
                 with Horizontal(classes="row"):
                     yield Label("Smart Sharpen", classes="name")
                     yield Switch(
                         value=bool(values["sharpen_enabled"]), id="sw-sharpen"
                     )
                 yield from self.tuning_row("sharpen", values)
-                yield Rule(classes="rule")
                 yield Static("FEATURES", classes="sub-title")
                 for widget_id, (label, key) in SWITCHES.items():
                     if widget_id in ("sw-lut", "sw-sharpen"):
