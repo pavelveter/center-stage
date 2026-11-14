@@ -25,6 +25,7 @@ thread has opened the camera and the virtual-camera backend.
 | `l` | toggle LUT color grading |
 | `s` | toggle smart sharpening |
 | `m` | toggle the one-second time loop |
+| `g` | toggle Magic Loop (AFK) |
 | `f` | toggle deep fry / glitch |
 | `]` / `[` | cycle to the next / previous `.cube` LUT (Russian layout: `ъ` / `х`) |
 
@@ -49,6 +50,8 @@ The screen is a single centered column (max 72 columns wide) with two blocks:
   - *Smart Sharpen* with the `Strength` tuner; the tuner is disabled while
     sharpening is off.
   - *Time Loop (1s)* - replays a 30-frame ring buffer as a seamless loop.
+  - *Magic Loop (AFK)* - freezes the stream into a seamless loop of the last
+    ten seconds of video, for stepping away from a call (see below).
   - *Deep Fry / Glitch* - boosted saturation/contrast with an RGB channel roll.
 
 Picking a `.cube` file in the dropdown bakes its 128^3 lookup table in a
@@ -56,6 +59,20 @@ background worker, so the video stream never stalls.
 
 Disabling face tracking eases the view back to the base zoom, centered at
 `0.5, 0.45`, using the same spring/EMA smoothing as tracking.
+
+## Magic Loop (AFK)
+
+Turning on *Magic Loop* (key `g`) freezes the published video into a seamless
+loop so you can step away from a call:
+
+- The pipeline keeps a rolling ten-second history (300 frames) of the processed
+  output, stored JPEG-compressed at reduced size.
+- On activation the current framing locks (tracking and zoom stop updating),
+  the history is searched for the wrap point whose frame differs least from
+  the loop start (mean absolute difference of tiny grayscale thumbnails), and
+  the segment is cut there.
+- The splice is hidden by a 12-frame crossfade between the loop tail and head,
+  and the loop replays continuously until the switch is turned off.
 
 ## Auto-save
 
@@ -73,7 +90,8 @@ uv run tracker.py --no-tracking --time-loop --deep-fry
 ```
 
 Other overrides: `--lut-scale`, `--detect-every`, `--sharpen/--no-sharpen`,
-`--sharpen-strength`, `--preview` (opens a debug OpenCV window as well).
+`--sharpen-strength`, `--magic-loop/--no-magic-loop`,
+`--preview` (opens a debug OpenCV window as well).
 
 ## Requirements
 
@@ -93,7 +111,8 @@ The `[sharpen]` section applies an edge-aware unsharp mask: only pixels whose
 local contrast exceeds `threshold` are sharpened, so skin stays smooth.
 `strength` 0.2-0.4 looks natural; 0 disables the effect.
 
-The `[effects]` section controls the time loop and deep fry toggles.
+The `[effects]` section controls the time loop, magic loop, and deep fry
+toggles.
 
 ## Tests
 

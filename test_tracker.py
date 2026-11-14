@@ -158,10 +158,14 @@ class TestSaveConfig(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "center-stage.ini")
             with open(path, "w") as f:
-                f.write("[effects]\ntime_loop = true\ndeep_fry = true\n")
+                f.write(
+                    "[effects]\ntime_loop = true\ndeep_fry = true\n"
+                    "magic_loop = true\n"
+                )
             cfg = tracker.load_config(path)
             self.assertTrue(cfg["time_loop_enabled"])
             self.assertTrue(cfg["deep_fry_enabled"])
+            self.assertTrue(cfg["magic_loop_enabled"])
 
 
 class TestSharedState(unittest.TestCase):
@@ -234,6 +238,78 @@ class TestDeepFry(unittest.TestCase):
         self.assertEqual(out.shape, frame.shape)
         self.assertEqual(out.dtype, np.uint8)
         self.assertFalse((out == frame).all())
+
+
+class TestMagicLoop(unittest.TestCase):
+    def test_build_loop_returns_none_without_enough_history(self):
+        import numpy as np
+
+        buf = tracker.MagicLoopBuffer()
+        frame = np.zeros((180, 320, 3), dtype=np.uint8)
+        buf.record(frame)
+        self.assertIsNone(buf.build_loop())
+
+    def test_seam_search_picks_the_matching_frame(self):
+        import numpy as np
+
+        buf = tracker.MagicLoopBuffer()
+        base = np.full((180, 320, 3), 40, dtype=np.uint8)
+        for i in range(tracker.MAGIC_LOOP_MIN_FRAMES + 5):
+            frame = base.copy()
+            frame[:, : i + 1] = 200  # a bar grows until the loop point
+            if i == 47:
+                frame = base.copy()  # identical to the first frame
+            buf.record(frame)
+        player = buf.build_loop()
+        self.assertIsNotNone(player)
+        self.assertEqual(len(player._frames), 48)
+
+    def test_player_crossfades_and_wraps(self):
+        import cv2
+        import numpy as np
+
+        n = 10
+        encoded = []
+        for i in range(n):
+            frame = np.full((180, 320, 3), i * 20 + 10, dtype=np.uint8)
+            ok, jpeg = cv2.imencode(".jpg", frame)
+            self.assertTrue(ok)
+            encoded.append(jpeg.tobytes())
+        player = tracker.MagicLoopPlayer(encoded)
+        fade = n - 2  # clamped from MAGIC_LOOP_FADE by the short loop
+        self.assertEqual(player._fade, fade)
+        out_size = (320, 180)
+        for _ in range(n):
+            player.next_frame(out_size)
+        # After one pass the playhead resumes past the crossfaded head.
+        self.assertEqual(player._index, fade + 1)
+        # The final faded frame is exactly the head frame it blends into.
+        tail = player.next_frame(out_size)  # i == n - 1, alpha == 1
+        head = cv2.resize(
+            cv2.imdecode(
+                np.frombuffer(encoded[fade], np.uint8), cv2.IMREAD_COLOR
+            ),
+            out_size,
+            interpolation=cv2.INTER_LINEAR,
+        )
+        self.assertTrue(np.allclose(tail, head, atol=1))
+        self.assertEqual(tail.shape, (180, 320, 3))
+
+    def test_short_loop_without_fade_wraps_to_start(self):
+        import cv2
+        import numpy as np
+
+        encoded = []
+        for i in range(2):
+            frame = np.full((60, 80, 3), 100, dtype=np.uint8)
+            ok, jpeg = cv2.imencode(".jpg", frame)
+            self.assertTrue(ok)
+            encoded.append(jpeg.tobytes())
+        player = tracker.MagicLoopPlayer(encoded)
+        self.assertEqual(player._fade, 0)
+        player.next_frame((80, 60))
+        player.next_frame((80, 60))
+        self.assertEqual(player._index, 0)
 
 
 class TestLutDiscovery(unittest.TestCase):
@@ -345,6 +421,114 @@ class TestVideoPipeline(unittest.TestCase):
         self.assertGreater(telemetry["fps"], 0.0)
         self.assertFalse(telemetry["tracking"])
 
+    def test_magic_loop_replays_a_frozen_seamless_loop(self):
+        import time
+        import types
+        from unittest import mock
+
+        import numpy as np
+
+        sent = []
+        counter = {"value": 0}
+
+        class FakeCapture:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def isOpened(self):
+                return True
+
+            def set(self, *args):
+                return True
+
+            def read(self):
+                counter["value"] += 1
+                value = counter["value"]
+                frame = np.full((120, 160, 3), 90, dtype=np.uint8)
+                # A moving column gives every live frame a distinct structure
+                # that survives JPEG, unlike a flat counter-encoded color.
+                frame[:, value % 160] = 255
+                return True, frame
+
+            def release(self):
+                pass
+
+        class FakeCamera:
+            device = "Fake Virtual Camera"
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def send(self, frame):
+                sent.append(frame)
+
+            def sleep_until_next_frame(self):
+                pass
+
+        class FakeDetector:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def detect(self, image):
+                return types.SimpleNamespace(detections=[])
+
+        cfg = dict(tracker.DEFAULTS)
+        # Zoom 1.0 keeps the whole frame so the moving column stays visible
+        # and every live frame remains distinct.
+        cfg.update(
+            out_w=160,
+            out_h=90,
+            magic_loop_enabled=True,
+            tracking_enabled=False,
+            zoom=1.0,
+        )
+        state = tracker.SharedState(cfg)
+        pipeline = tracker.VideoPipeline(cfg, state)
+        with (
+            mock.patch.object(tracker, "ensure_model", return_value="fake"),
+            mock.patch.object(tracker.cv2, "VideoCapture", FakeCapture),
+            mock.patch.object(tracker.pyvirtualcam, "Camera", FakeCamera),
+            mock.patch.object(
+                tracker.vision.FaceDetector,
+                "create_from_options",
+                return_value=FakeDetector(),
+            ),
+        ):
+            pipeline.start()
+            # Give the history time to fill past MAGIC_LOOP_MIN_FRAMES and
+            # the player to cycle at least twice.
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and len(sent) < 200:
+                time.sleep(0.01)
+            pipeline.stop()
+            pipeline.join(2.0)
+
+        self.assertFalse(pipeline.is_alive())
+        self.assertGreater(len(sent), 100)
+        # Live frames are unique (counter-encoded), so a repeated frame in
+        # the tail proves the published stream froze into the replayed loop.
+        head_keys = {frame.tobytes() for frame in sent[:50]}
+        self.assertGreater(len(head_keys), 45)
+        seen = {}
+        repeat_gap = None
+        for k, frame in enumerate(sent[50:]):
+            key = frame.tobytes()
+            if key in seen:
+                repeat_gap = k - seen[key]
+                break
+            seen[key] = k
+        self.assertIsNotNone(repeat_gap)
+        self.assertGreater(repeat_gap, 1)
+
 
 class TestMainCli(unittest.TestCase):
     def test_list_cameras_exits_before_the_tui(self):
@@ -378,13 +562,21 @@ class TestMainCli(unittest.TestCase):
         path = os.path.join(tempfile.mkdtemp(), "custom.ini")
         with mock.patch.object(tui, "CenterStageApp", FakeApp):
             tracker.main(
-                ["--config", path, "--no-tracking", "--time-loop", "--deep-fry"]
+                [
+                    "--config",
+                    path,
+                    "--no-tracking",
+                    "--time-loop",
+                    "--deep-fry",
+                    "--magic-loop",
+                ]
             )
         self.assertTrue(seen["ran"])
         self.assertEqual(seen["path"], path)
         self.assertFalse(seen["cfg"]["tracking_enabled"])
         self.assertTrue(seen["cfg"]["time_loop_enabled"])
         self.assertTrue(seen["cfg"]["deep_fry_enabled"])
+        self.assertTrue(seen["cfg"]["magic_loop_enabled"])
 
 
 class TestTui(unittest.IsolatedAsyncioTestCase):
@@ -431,6 +623,11 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("m")
                 await pilot.pause()
                 self.assertTrue(app.state.snapshot()["time_loop_enabled"])
+
+                await pilot.press("g")
+                await pilot.pause()
+                self.assertTrue(app.state.snapshot()["magic_loop_enabled"])
+                self.assertTrue(app.query_one("#sw-magic", tui.Switch).value)
 
                 zoom = app.query_one("#in-zoom", tui.Input)
                 zoom.value = "2.5"

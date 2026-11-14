@@ -58,6 +58,7 @@ DEFAULTS = {
     "sharpen_sigma": 2.0,       # Gaussian blur radius for the high-pass filter
     "time_loop_enabled": False, # replay the last second of processed frames
     "deep_fry_enabled": False,  # high-contrast saturation + RGB channel roll
+    "magic_loop_enabled": False,  # AFK: play a seamless loop of recent video
 }
 
 # Maps INI sections/keys (human-facing) to config keys (code-facing). Both
@@ -100,11 +101,26 @@ INI_MAP = {
     "effects": {
         "time_loop": "time_loop_enabled",
         "deep_fry": "deep_fry_enabled",
+        "magic_loop": "magic_loop_enabled",
     },
 }
 
 # One second of processed frames at the nominal 30 FPS.
 TIME_LOOP_FRAMES = 30
+
+# Magic Loop (AFK) history: ten seconds of encoded processed frames. Frames
+# are stored JPEG-compressed at reduced size; raw 1080p would need ~1.9 GB for
+# 300 frames, this stays around 100 MB and the encode fits the frame budget.
+MAGIC_LOOP_FRAMES = 300
+MAGIC_LOOP_W, MAGIC_LOOP_H = 960, 540
+MAGIC_LOOP_JPEG_QUALITY = 85
+# Crossfade length in frames at the splice between loop end and start.
+MAGIC_LOOP_FADE = 12
+# Need at least 1.5 s of history before a loop is worth building.
+MAGIC_LOOP_MIN_FRAMES = 45
+# Only the last two seconds are considered as the wrap-around point, so the
+# loop keeps a reasonable length instead of collapsing to a few frames.
+MAGIC_LOOP_SEARCH_FRAMES = 60
 
 # Face detector model is downloaded once and cached in the user's cache dir,
 # so the repo stays free of binary assets and subsequent starts are offline.
@@ -530,6 +546,7 @@ class SharedState:
         "sharpen_strength",
         "time_loop_enabled",
         "deep_fry_enabled",
+        "magic_loop_enabled",
     )
 
     def __init__(self, cfg):
@@ -632,6 +649,104 @@ class TimeLoop:
         frame = self._frames[self._index % len(self._frames)]
         self._index += 1
         return frame
+
+
+class MagicLoopBuffer:
+    """Rolling history of encoded processed frames for the AFK Magic Loop.
+
+    Every processed output frame is stored JPEG-compressed at reduced size
+    together with a tiny grayscale thumbnail. The thumbnail makes the seam
+    search nearly free; the JPEGs keep ten seconds of history around 100 MB
+    instead of the ~1.9 GB raw frames would need.
+    """
+
+    THUMB_W, THUMB_H = 160, 90
+
+    def __init__(self, length=MAGIC_LOOP_FRAMES):
+        self._frames = collections.deque(maxlen=length)
+
+    def record(self, frame):
+        """Encode one processed frame into the history (best effort)."""
+        small = cv2.resize(frame, (MAGIC_LOOP_W, MAGIC_LOOP_H))
+        ok, encoded = cv2.imencode(
+            ".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, MAGIC_LOOP_JPEG_QUALITY]
+        )
+        if not ok:
+            return
+        thumb = cv2.cvtColor(
+            cv2.resize(small, (self.THUMB_W, self.THUMB_H)), cv2.COLOR_BGR2GRAY
+        )
+        self._frames.append((encoded.tobytes(), thumb))
+
+    def build_loop(self):
+        """Pick the smoothest wrap point and return a MagicLoopPlayer.
+
+        The first recorded frame is compared against every candidate frame in
+        the last MAGIC_LOOP_SEARCH_FRAMES using mean absolute difference of
+        the thumbnails; the lowest difference becomes the splice. Returns None
+        while there is not enough history yet.
+        """
+        frames = list(self._frames)
+        if len(frames) < MAGIC_LOOP_MIN_FRAMES:
+            return None
+        first = frames[0][1]
+        lo = max(MAGIC_LOOP_MIN_FRAMES, len(frames) - MAGIC_LOOP_SEARCH_FRAMES)
+        # ponytail: O(n) thumb scan per activation only; n is capped at 300.
+        best_end, best_err = None, None
+        for end in range(len(frames) - 1, lo - 1, -1):
+            err = float(np.mean(cv2.absdiff(first, frames[end][1])))
+            if best_err is None or err < best_err:
+                best_err, best_end = err, end
+        if best_end is None:
+            return None
+        return MagicLoopPlayer([jpeg for jpeg, _ in frames[: best_end + 1]])
+
+
+class MagicLoopPlayer:
+    """Plays a fixed seamless loop with a short crossfade at the splice.
+
+    The last MAGIC_LOOP_FADE frames of the loop are alpha-blended with the
+    frames right after the start, so wrapping from the end back to the head
+    never produces a visible jump. The blended head frames are skipped on
+    later passes because they were already shown through the fade.
+    """
+
+    def __init__(self, encoded, fade=MAGIC_LOOP_FADE):
+        self._frames = encoded
+        # A loop too short to fade would blend a frame with itself.
+        self._fade = max(0, min(fade, len(encoded) - 2))
+        self._index = 0
+
+    def _decode(self, i, out_size):
+        jpeg = cv2.imdecode(
+            np.frombuffer(self._frames[i], np.uint8), cv2.IMREAD_COLOR
+        )
+        return cv2.resize(jpeg, out_size, interpolation=cv2.INTER_LINEAR)
+
+    def next_frame(self, out_size):
+        """Return the next loop frame resized to out_size (w, h)."""
+        n = len(self._frames)
+        fade = self._fade
+        i = self._index
+        if fade and i >= n - fade:
+            k = i - (n - fade)
+            alpha = (k + 1) / fade
+            frame = cv2.addWeighted(
+                self._decode(i, out_size),
+                1.0 - alpha,
+                self._decode(k + 1, out_size),
+                alpha,
+                0.0,
+            )
+        else:
+            frame = self._decode(i, out_size)
+        if i + 1 >= n:
+            # The crossfade already revealed frames 1..fade, so later passes
+            # resume right after them; without a fade, wrap to the start.
+            self._index = fade + 1 if fade else 0
+        else:
+            self._index = i + 1
+        return np.ascontiguousarray(frame)
 
 
 def apply_deep_fry(frame_bgr, saturation=2.0, contrast=1.3, shift=10):
@@ -751,6 +866,9 @@ class VideoPipeline(threading.Thread):
         fps_ema = 0.0
         last_time = time.monotonic()
         time_loop = TimeLoop()
+        magic_loop = MagicLoopBuffer()
+        magic_player = None
+        magic_on_prev = False
 
         while not self._stop_event.is_set():
             try:
@@ -777,8 +895,21 @@ class VideoPipeline(threading.Thread):
                 state = self.state.snapshot()
                 base_zoom = max(1.0, float(state["zoom"]))
 
+                magic_on = bool(state["magic_loop_enabled"])
+                if magic_on != magic_on_prev:
+                    magic_on_prev = magic_on
+                    # Activation freezes the current framing: replaying skips
+                    # the whole pipeline, so tracking and zoom simply stop.
+                    magic_player = magic_loop.build_loop() if magic_on else None
+                if magic_on and magic_player is None:
+                    # History still building up; retry until there is enough.
+                    magic_player = magic_loop.build_loop()
+
                 looping = bool(state["time_loop_enabled"]) and time_loop.ready
-                if looping:
+                if magic_on and magic_player is not None:
+                    # Magic Loop wins over the plain Time Loop replay.
+                    out_frame = magic_player.next_frame((out_w, out_h))
+                elif looping:
                     # Replaying the buffer skips the whole image pipeline.
                     out_frame = time_loop.next_frame()
                 else:
@@ -862,6 +993,10 @@ class VideoPipeline(threading.Thread):
                         out_frame = apply_deep_fry(out_frame)
 
                     out_frame = time_loop.record(out_frame)
+                    # Always feed the AFK history so Magic Loop can start
+                    # from the moment it is switched on. The ~2 ms encode
+                    # fits the frame budget at 30 fps.
+                    magic_loop.record(out_frame)
 
                 cam.send(out_frame)
                 cam.sleep_until_next_frame()
@@ -932,6 +1067,12 @@ def parse_args(argv=None):
         help="apply the deep-fry saturation and RGB channel-roll effect",
     )
     p.add_argument(
+        "--magic-loop",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="AFK mode: replay a seamless crossfaded loop of recent video",
+    )
+    p.add_argument(
         "--preview", action="store_true", help="show a debug preview window (costs CPU)"
     )
     p.add_argument(
@@ -974,6 +1115,8 @@ def main(argv=None):
         cfg["time_loop_enabled"] = args.time_loop
     if args.deep_fry is not None:
         cfg["deep_fry_enabled"] = args.deep_fry
+    if args.magic_loop is not None:
+        cfg["magic_loop_enabled"] = args.magic_loop
 
     base_dir = (
         os.path.dirname(os.path.abspath(config_path)) if config_path else os.getcwd()

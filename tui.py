@@ -35,6 +35,7 @@ SWITCHES = {
     "sw-lut": ("LUT Grading", "lut_enabled"),
     "sw-sharpen": ("Smart Sharpen", "sharpen_enabled"),
     "sw-loop": ("Time Loop (1s)", "time_loop_enabled"),
+    "sw-magic": ("Magic Loop (AFK)", "magic_loop_enabled"),
     "sw-fry": ("Deep Fry", "deep_fry_enabled"),
 }
 
@@ -101,7 +102,7 @@ class CenterStageApp(App):
         margin-bottom: 1;
     }
     .name {
-        width: 16;
+        width: 22;
         margin-right: 2;
     }
     .row Switch {
@@ -112,7 +113,7 @@ class CenterStageApp(App):
         margin: 0 4 0 0;
     }
     .switch-spacer {
-        width: 10;
+        width: 6;
         margin-right: 4;
     }
     .tuner-name {
@@ -156,6 +157,7 @@ class CenterStageApp(App):
         Binding("l", "toggle_lut", "LUT", priority=True),
         Binding("s", "toggle_sharpen", "Sharpen", priority=True),
         Binding("m", "toggle_time_loop", "Loop", priority=True),
+        Binding("g", "toggle_magic_loop", "Magic", priority=True),
         Binding("f", "toggle_deep_fry", "Fry", priority=True),
         Binding("]", "next_lut", "Next LUT", priority=True),
         Binding("[", "prev_lut", "Prev LUT", priority=True),
@@ -239,6 +241,7 @@ class CenterStageApp(App):
                 "Smart Sharpen", "sw-sharpen", values, tuner="sharpen"
             )
             yield from self.switch_row("Time Loop (1s)", "sw-loop", values)
+            yield from self.switch_row("Magic Loop (AFK)", "sw-magic", values)
             yield from self.switch_row("Deep Fry", "sw-fry", values)
         yield Footer()
 
@@ -353,6 +356,9 @@ class CenterStageApp(App):
 
     def action_toggle_time_loop(self) -> None:
         self.flip_switch("sw-loop")
+
+    def action_toggle_magic_loop(self) -> None:
+        self.flip_switch("sw-magic")
 
     def action_toggle_deep_fry(self) -> None:
         self.flip_switch("sw-fry")
