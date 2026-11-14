@@ -23,6 +23,7 @@ thread has opened the camera and the virtual-camera backend.
 | `q` | quit (settings are saved first) |
 | `t` | toggle face tracking |
 | `c` | toggle LUT color grading |
+| `h` | toggle GLSL shader processing |
 | `s` | toggle smart sharpening |
 | `l` | toggle the one-second time loop |
 | `m` | toggle Magic Loop (AFK) |
@@ -47,6 +48,9 @@ The screen is a single centered column (max 72 columns wide) with two blocks:
     directly below (every file found in `LUT/` and the working directory at
     startup). Switching grading off dims and disables the dropdown and the
     scale control.
+  - *GLSL Shader* with the `.glsl` dropdown directly below (every file found
+    in `shaders/` and the working directory at startup). Switching the shader
+    off dims and disables the dropdown.
   - *Smart Sharpen* with the `Strength` tuner; the tuner is disabled while
     sharpening is off.
   - *Time Loop (1s)* - replays a 30-frame ring buffer as a seamless loop.
@@ -56,6 +60,14 @@ The screen is a single centered column (max 72 columns wide) with two blocks:
 
 Picking a `.cube` file in the dropdown bakes its 128^3 lookup table in a
 background worker, so the video stream never stalls.
+
+Picking a `.glsl` file runs it on the GPU in real time via a headless
+`moderngl` context that lives inside the video thread. Shaders are
+Shadertoy-style: they define `void mainImage(out vec4 fragColor, in vec2
+fragCoord)`, read the current BGR frame from the `texture0` sampler (also
+aliased as `iChannel0`) sized by the `iResolution` uniform, and output
+processed BGR pixels. A shader that fails to compile is reported once and
+the frame passes through unchanged.
 
 Disabling face tracking eases the view back to the base zoom, centered at
 `0.5, 0.45`, using the same spring/EMA smoothing as tracking.
@@ -100,6 +112,7 @@ uv run tracker.py --no-tracking --time-loop --deep-fry
 
 Other overrides: `--lut-scale`, `--detect-every`, `--sharpen/--no-sharpen`,
 `--sharpen-strength`, `--magic-loop/--no-magic-loop`,
+`--shader <path.glsl>`, `--shader-enabled/--no-shader-enabled`,
 `--preview` (opens a debug OpenCV window as well).
 
 ## Requirements
@@ -114,7 +127,8 @@ Other overrides: `--lut-scale`, `--detect-every`, `--sharpen/--no-sharpen`,
 `effects` sections. Values changed in the TUI are written back there.
 
 The `[color]` section applies a 3D `.cube` LUT. `lut_scale` downsamples during
-grading for speed (2 = highest quality, higher = faster).
+grading for speed (2 = highest quality, higher = faster). It also holds
+`shader_enabled` and `shader_file` for the GPU `.glsl` effect.
 
 The `[sharpen]` section applies an edge-aware unsharp mask: only pixels whose
 local contrast exceeds `threshold` are sharpened, so skin stays smooth.

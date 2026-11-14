@@ -33,6 +33,7 @@ import tracker
 SWITCHES = {
     "sw-tracking": ("Face Tracking", "tracking_enabled"),
     "sw-lut": ("LUT Grading", "lut_enabled"),
+    "sw-shader": ("GLSL Shader", "shader_enabled"),
     "sw-sharpen": ("Smart Sharpen", "sharpen_enabled"),
     "sw-loop": ("Time Loop (1s)", "time_loop_enabled"),
     "sw-magic": ("Magic Loop (AFK)", "magic_loop_enabled"),
@@ -148,6 +149,18 @@ class CenterStageApp(App):
         height: 1;
         padding: 0 1;
     }
+    #shader-select {
+        width: 1fr;
+        height: 1;
+        border: none;
+        background: $surface-lighten-2;
+        margin-bottom: 1;
+    }
+    #shader-select SelectCurrent {
+        border: none !important;
+        height: 1;
+        padding: 0 1;
+    }
     """
     # priority bindings keep the shortcuts working while a tuning input or the
     # LUT list has focus; the inputs accept numbers only.
@@ -155,6 +168,7 @@ class CenterStageApp(App):
         Binding("q", "shutdown", "Quit", priority=True),
         Binding("t", "toggle_tracking", "Tracking", priority=True),
         Binding("c", "toggle_lut", "LUT", priority=True),
+        Binding("h", "toggle_shader", "Shader", priority=True),
         Binding("s", "toggle_sharpen", "Sharpen", priority=True),
         Binding("l", "toggle_time_loop", "Loop", priority=True),
         Binding("m", "toggle_magic_loop", "Magic", priority=True),
@@ -164,6 +178,7 @@ class CenterStageApp(App):
         # Russian layout equivalents: c/l/m sit on с/д/ь and the bracket keys
         # on ъ/х under the ЙЦУКЕН layout.
         Binding("с", "toggle_lut", show=False, priority=True),
+        Binding("р", "toggle_shader", show=False, priority=True),
         Binding("д", "toggle_time_loop", show=False, priority=True),
         Binding("ь", "toggle_magic_loop", show=False, priority=True),
         Binding("ъ", "next_lut", show=False, priority=True),
@@ -179,6 +194,7 @@ class CenterStageApp(App):
         self.pipeline = tracker.VideoPipeline(cfg, self.state, preview=preview)
         self.lut_files = tracker.list_lut_files(cfg["lut_file"])
         self.lut_request = ""
+        self.shader_files = tracker.list_shader_files(cfg["shader_file"])
         # Tracking state to restore when Magic Loop turns off again.
         self._tracking_before_magic = None
 
@@ -246,6 +262,19 @@ class CenterStageApp(App):
                 compact=True,
                 type_to_search=False,
                 id="lut-select",
+            )
+            shader_selected = values["shader_file"]
+            if shader_selected not in self.shader_files:
+                shader_selected = Select.NULL
+            yield from self.switch_row("GLSL Shader", "sw-shader", values)
+            yield Select(
+                [(os.path.basename(p), p) for p in self.shader_files],
+                value=shader_selected,
+                prompt="shader .glsl",
+                allow_blank=True,
+                compact=True,
+                type_to_search=False,
+                id="shader-select",
             )
             yield from self.switch_row(
                 "Smart Sharpen", "sw-sharpen", values, tuner="sharpen"
@@ -343,6 +372,9 @@ class CenterStageApp(App):
         lut_on = bool(values["lut_enabled"])
         self.query_one("#lut-select", Select).disabled = not lut_on
         self.set_tuning_disabled("lutscale", not lut_on)
+        self.query_one("#shader-select", Select).disabled = not bool(
+            values["shader_enabled"]
+        )
         self.set_tuning_disabled("sharpen", not bool(values["sharpen_enabled"]))
 
     def on_switch_changed(self, event: Switch.Changed) -> None:
@@ -369,7 +401,10 @@ class CenterStageApp(App):
                 self._tracking_before_magic = bool(
                     self.state.snapshot()["tracking_enabled"]
                 )
-            self.state.update(tracking_enabled=False)
+            # One atomic update: if tracking went off a frame before the loop
+            # went on, the crop would already start easing back to the base
+            # framing and the frozen crop would not match the history.
+            self.state.update(tracking_enabled=False, magic_loop_enabled=True)
             switch.value = False
             switch.disabled = True
         else:
@@ -394,6 +429,9 @@ class CenterStageApp(App):
 
     def action_toggle_lut(self) -> None:
         self.flip_switch("sw-lut")
+
+    def action_toggle_shader(self) -> None:
+        self.flip_switch("sw-shader")
 
     def action_toggle_sharpen(self) -> None:
         self.flip_switch("sw-sharpen")
@@ -439,6 +477,12 @@ class CenterStageApp(App):
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """Bake the chosen .cube file, or drop grading on a blank selection."""
+        if event.select.id == "shader-select":
+            path = event.value
+            if path and path != self.state.snapshot()["shader_file"]:
+                self.state.update(shader_file=path)
+                self.set_notice(f"shader: {os.path.basename(path)}")
+            return
         if event.select.id != "lut-select":
             return
         path = event.value

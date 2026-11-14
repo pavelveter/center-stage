@@ -159,6 +159,8 @@ class TestSaveConfig(unittest.TestCase):
             path = os.path.join(folder, "center-stage.ini")
             with open(path, "w") as f:
                 f.write(
+                    "[color]\nlut_enabled = true\nshader_enabled = true\n"
+                    "shader_file = sh.glsl\n"
                     "[effects]\ntime_loop = true\ndeep_fry = true\n"
                     "magic_loop = true\n"
                 )
@@ -166,6 +168,8 @@ class TestSaveConfig(unittest.TestCase):
             self.assertTrue(cfg["time_loop_enabled"])
             self.assertTrue(cfg["deep_fry_enabled"])
             self.assertTrue(cfg["magic_loop_enabled"])
+            self.assertTrue(cfg["shader_enabled"])
+            self.assertEqual(cfg["shader_file"], "sh.glsl")
 
 
 class TestSharedState(unittest.TestCase):
@@ -241,13 +245,15 @@ class TestDeepFry(unittest.TestCase):
 
 
 class TestMagicLoop(unittest.TestCase):
+    CROP = (0.5, 0.45, 1.5)
+
     def test_build_loop_returns_none_without_enough_history(self):
         import numpy as np
 
         buf = tracker.MagicLoopBuffer()
         frame = np.zeros((180, 320, 3), dtype=np.uint8)
-        buf.record(frame)
-        self.assertIsNone(buf.build_loop())
+        buf.record(frame, self.CROP)
+        self.assertIsNone(buf.build_loop(self.CROP))
 
     def test_seam_search_picks_the_calmest_window(self):
         import cv2
@@ -255,22 +261,29 @@ class TestMagicLoop(unittest.TestCase):
 
         buf = tracker.MagicLoopBuffer()
         still = np.full((180, 320, 3), 40, dtype=np.uint8)
-        for i in range(tracker.MAGIC_LOOP_MIN_FRAMES + 30):
-            if i < 60:
+        # Busy first, then a still stretch long enough to hold a minimum
+        # loop (2 s) plus its crossfade tail (span = loop + blend frames).
+        for i in range(tracker.MAGIC_LOOP_MIN_FRAMES + 120):
+            if i < 30:
                 frame = still.copy()
                 # Busy motion early on: a bar jumps around every frame.
                 frame[:, : ((i * 11) % 6) * 50 + 10] = 200
             else:
                 frame = still  # dead still afterwards
-            buf.record(frame)
-        player = buf.build_loop()
+            buf.record(frame, self.CROP)
+        player = buf.build_loop(self.CROP)
         self.assertIsNotNone(player)
-        # The loop is a full minimum-length window taken entirely from the
-        # still zone, not from the moving part of the history.
-        self.assertEqual(len(player._frames), tracker.MAGIC_LOOP_MIN_LOOP_FRAMES)
+        # The clip holds the loop plus its crossfade tail, and the loop
+        # length is inside the 2-5 s window bounds.
+        self.assertEqual(
+            len(player._frames),
+            player._length + player._blend,
+        )
+        self.assertGreaterEqual(player._length, tracker.MAGIC_LOOP_MIN_LOOP_FRAMES)
         first = cv2.imdecode(
             np.frombuffer(player._frames[0], np.uint8), cv2.IMREAD_COLOR
         )
+        # The winner starts in the still zone, not in the busy part.
         self.assertLess(int(first.max()), 100)
 
     def test_loop_rejects_a_window_shorter_than_two_seconds(self):
@@ -280,29 +293,151 @@ class TestMagicLoop(unittest.TestCase):
         still = np.full((180, 320, 3), 40, dtype=np.uint8)
         # Just under MAGIC_LOOP_MIN_FRAMES: a full calm window cannot exist.
         for _ in range(tracker.MAGIC_LOOP_MIN_FRAMES - 1):
-            buf.record(still)
-        self.assertIsNone(buf.build_loop())
+            buf.record(still, self.CROP)
+        self.assertIsNone(buf.build_loop(self.CROP))
 
-    def test_player_plays_in_order_and_restarts_cleanly(self):
+    def test_player_plays_in_order_and_wraps_with_crossfade(self):
         import cv2
         import numpy as np
 
-        n = 10
+        length, blend = 6, 2
         encoded = []
-        for i in range(n):
+        for i in range(length + blend):
             frame = np.full((180, 320, 3), i * 20 + 10, dtype=np.uint8)
             ok, jpeg = cv2.imencode(".jpg", frame)
             self.assertTrue(ok)
             encoded.append(jpeg.tobytes())
-        player = tracker.MagicLoopPlayer(encoded)
+        player = tracker.MagicLoopPlayer(encoded, length, blend)
         out_size = (320, 180)
-        frames = [player.next_frame(out_size) for _ in range(n + 2)]
-        # Every frame plays in recording order, with no crossfade blending.
-        for a, b in zip(frames[: n - 1], frames[1:n]):
-            self.assertLess(int(a.mean()), int(b.mean()))
-        # The wrap restarts exactly from the head frame.
-        self.assertTrue(np.array_equal(frames[n], frames[0]))
-        self.assertTrue(np.array_equal(frames[n + 1], frames[1]))
+        frames = [player.next_frame(out_size) for _ in range(length + blend)]
+
+        def decode(i):
+            return cv2.resize(
+                cv2.imdecode(
+                    np.frombuffer(encoded[i], np.uint8), cv2.IMREAD_COLOR
+                ),
+                out_size,
+                interpolation=cv2.INTER_LINEAR,
+            )
+
+        # Plain frames play clip[t] in recording order after the blend head.
+        for t in range(blend, length):
+            self.assertTrue(np.array_equal(frames[t], decode(t)))
+        # The first blended frame already moved away from clip[0] towards
+        # the footage that followed the loop, so no motion reversal.
+        self.assertFalse(np.array_equal(frames[0], decode(0)))
+
+
+class TestShaderFiles(unittest.TestCase):
+    def test_scans_working_directory_and_shaders_folder(self):
+        import os
+        import tempfile
+
+        old_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as folder:
+            os.makedirs(os.path.join(folder, "shaders"))
+            for relative in (
+                "root.glsl",
+                os.path.join("shaders", "nested.glsl"),
+                os.path.join("shaders", "ignore.txt"),
+            ):
+                open(os.path.join(folder, relative), "w").close()
+            os.chdir(folder)
+            try:
+                files = tracker.list_shader_files(None)
+            finally:
+                os.chdir(old_cwd)
+        self.assertEqual(
+            [os.path.basename(path) for path in files],
+            ["root.glsl", "nested.glsl"],
+        )
+
+    def test_load_shader_reads_source_and_rejects_bad_files(self):
+        import os
+        import tempfile
+
+        self.assertIsNone(tracker.load_shader(""))
+        self.assertIsNone(tracker.load_shader("/no/such/file.glsl"))
+        with tempfile.TemporaryDirectory() as folder:
+            plain = os.path.join(folder, "plain.glsl")
+            open(plain, "w").write("vec3 noop(vec3 c) { return c; }")
+            self.assertIsNone(tracker.load_shader(plain))
+            good = os.path.join(folder, "good.glsl")
+            source = "void mainImage(out vec4 c, in vec2 p) { c = vec4(1.0); }"
+            open(good, "w").write(source)
+            self.assertEqual(tracker.load_shader(good), source)
+
+
+class TestShaderEngine(unittest.TestCase):
+    PASSTHROUGH = """
+    void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+        fragColor = vec4(texture(iChannel0, fragCoord.xy / iResolution.xy).rgb, 1.0);
+    }
+    """
+
+    def _write(self, folder, name, source):
+        import os
+
+        path = os.path.join(folder, name)
+        with open(path, "w") as f:
+            f.write(source)
+        return path
+
+    def test_passthrough_preserves_the_frame(self):
+        import os
+        import tempfile
+
+        import numpy as np
+
+        frame = np.zeros((60, 80, 3), dtype=np.uint8)
+        frame[..., 2] = 200  # blue in BGR
+        try:
+            engine = tracker.ShaderEngine()
+            with tempfile.TemporaryDirectory() as folder:
+                path = self._write(folder, "pass.glsl", self.PASSTHROUGH)
+                out = engine.apply(frame, path)
+                # A broken file disables the effect, frame passes through.
+                broken = self._write(folder, "broken.glsl", "vec3 noop;")
+                self.assertTrue(
+                    (engine.apply(frame, broken) == frame).all()
+                )
+        except Exception:
+            self.skipTest("no usable GPU context in this environment")
+        finally:
+            if engine._ctx is not None:
+                engine._ctx.release()
+        self.assertEqual(out.shape, frame.shape)
+        self.assertEqual(out.dtype, np.uint8)
+        # Passthrough must not reorder or flip anything.
+        self.assertTrue((out == frame).all())
+
+    def test_inverting_shader_changes_pixels(self):
+        import os
+        import tempfile
+
+        import numpy as np
+
+        source = """
+        void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+            vec3 c = texture(iChannel0, fragCoord.xy / iResolution.xy).rgb;
+            fragColor = vec4(vec3(1.0) - c, 1.0);
+        }
+        """
+        engine = tracker.ShaderEngine()
+        frame = np.zeros((60, 80, 3), dtype=np.uint8)
+        frame[10:20, 20:30] = (30, 60, 90)
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                path = self._write(folder, "invert.glsl", source)
+                out = engine.apply(frame, path)
+        except Exception:
+            self.skipTest("no usable GPU context in this environment")
+        finally:
+            if engine._ctx is not None:
+                engine._ctx.release()
+        self.assertFalse((out == frame).all())
+        # The marked region is inverted (255 - value, small tolerance).
+        self.assertTrue(abs(int(out[15, 25, 0]) - (255 - 30)) <= 2)
 
 
 class TestLutDiscovery(unittest.TestCase):
@@ -565,6 +700,9 @@ class TestMainCli(unittest.TestCase):
                     "--time-loop",
                     "--deep-fry",
                     "--magic-loop",
+                    "--shader",
+                    "/tmp/fx.glsl",
+                    "--shader-enabled",
                 ]
             )
         self.assertTrue(seen["ran"])
@@ -573,6 +711,8 @@ class TestMainCli(unittest.TestCase):
         self.assertTrue(seen["cfg"]["time_loop_enabled"])
         self.assertTrue(seen["cfg"]["deep_fry_enabled"])
         self.assertTrue(seen["cfg"]["magic_loop_enabled"])
+        self.assertEqual(seen["cfg"]["shader_file"], "/tmp/fx.glsl")
+        self.assertTrue(seen["cfg"]["shader_enabled"])
 
 
 class TestTui(unittest.IsolatedAsyncioTestCase):
@@ -704,6 +844,41 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(app.state.snapshot()["tracking_enabled"])
                 self.assertTrue(tracking.value)
                 self.assertFalse(tracking.disabled)
+        finally:
+            tracker.VideoPipeline = original
+
+    async def test_shader_controls_follow_their_switch_and_select(self):
+        import os
+        import tempfile
+
+        import tui
+
+        original = tracker.VideoPipeline
+        tracker.VideoPipeline = self.FakePipeline
+        try:
+            cfg = dict(tracker.DEFAULTS)
+            cfg["lut_file"] = ""
+            cfg["shader_enabled"] = False
+            app = tui.CenterStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
+            async with app.run_test(size=(100, 45)) as pilot:
+                await pilot.pause()
+                select = app.query_one("#shader-select", tui.Select)
+                self.assertTrue(select.disabled)
+                self.assertTrue(app.shader_files)
+
+                # The h shortcut flips the switch and enables the dropdown.
+                await pilot.press("h")
+                await pilot.pause()
+                self.assertTrue(app.state.snapshot()["shader_enabled"])
+                self.assertTrue(app.query_one("#sw-shader", tui.Switch).value)
+                self.assertFalse(select.disabled)
+
+                # Picking a file updates the shared state.
+                select.value = app.shader_files[0]
+                await pilot.pause()
+                self.assertEqual(
+                    app.state.snapshot()["shader_file"], app.shader_files[0]
+                )
         finally:
             tracker.VideoPipeline = original
 

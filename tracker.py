@@ -22,6 +22,7 @@ import urllib.request
 
 import cv2
 import mediapipe as mp
+import moderngl
 import numpy as np
 import pyvirtualcam
 from mediapipe.tasks import python as mp_python
@@ -52,6 +53,8 @@ DEFAULTS = {
     "lut_file": "",             # path to a .cube 3D LUT (empty = no grading)
     "lut_scale": 8,             # LUT downscale factor (higher = faster, softer)
     "lut_detail": True,         # upscale only the color delta to keep sharpness
+    "shader_enabled": False,    # toggle GLSL shader processing on the GPU
+    "shader_file": "",          # path to a .glsl fragment shader (empty = none)
     "sharpen_enabled": False,   # toggle edge-aware sharpening
     "sharpen_strength": 0.3,    # unsharp-mask amount (0..1 looks natural)
     "sharpen_threshold": 10,    # min local contrast before sharpening kicks in
@@ -91,6 +94,8 @@ INI_MAP = {
         "lut_file": "lut_file",
         "lut_scale": "lut_scale",
         "lut_detail": "lut_detail",
+        "shader_enabled": "shader_enabled",
+        "shader_file": "shader_file",
     },
     "sharpen": {
         "enabled": "sharpen_enabled",
@@ -114,19 +119,31 @@ TIME_LOOP_FRAMES = 30
 MAGIC_LOOP_FRAMES = 300
 MAGIC_LOOP_W, MAGIC_LOOP_H = 960, 540
 MAGIC_LOOP_JPEG_QUALITY = 85
-# Settling grace period after activation: tracking was just killed, so any
-# motion from hitting the button flushes out of the history before a loop is
-# selected. No loop is built or played during this cool-down.
-MAGIC_LOOP_SETTLE_SECONDS = 1.75
+# Frames right before the key press are never used for the loop: the head is
+# already turning towards the keyboard and the hand is on its way. Everything
+# recorded after the press is off limits too (the person is getting up).
+MAGIC_LOOP_GUARD_SECONDS = 0.8
 # Need three seconds of history before a loop can be built at all.
 MAGIC_LOOP_MIN_FRAMES = 90
-# Seconds of dissolve when switching from the live feed into the loop.
-MAGIC_LOOP_ENTRY_FADE_SECONDS = 0.5
+# Seconds of dissolve from the live feed into the loop and back out of it.
+MAGIC_LOOP_ENTRY_FADE_SECONDS = 0.4
+MAGIC_LOOP_EXIT_FADE_SECONDS = 0.5
 # The loop itself must be 2-5 seconds: short enough segments look like a
 # nervous stutter, long ones stop feeling "frozen".
 MAGIC_LOOP_MIN_LOOP_FRAMES = 60
 MAGIC_LOOP_MAX_LOOP_FRAMES = 150
 MAGIC_LOOP_LENGTH_STEP = 10
+# The seam is hidden by a crossfade this many frames long. The tail of the
+# loop runs on past its nominal end into the footage that originally followed
+# it, and that footage is faded into the head, so motion never reverses or
+# jumps at the restart.
+MAGIC_LOOP_BLEND_FRAMES = 12
+# Score weights: a ghosting seam and a crop that differs from the frozen
+# framing (cost per percent of crop width) versus plain motion.
+MAGIC_LOOP_SEAM_WEIGHT = 2.0
+MAGIC_LOOP_CROP_WEIGHT = 3.0
+# Shorter loops repeat more noticeably; the shortest gets this much penalty.
+MAGIC_LOOP_SHORT_PENALTY = 0.25
 
 # Face detector model is downloaded once and cached in the user's cache dir,
 # so the repo stays free of binary assets and subsequent starts are offline.
@@ -550,6 +567,8 @@ class SharedState:
         "lut_scale",
         "sharpen_enabled",
         "sharpen_strength",
+        "shader_enabled",
+        "shader_file",
         "time_loop_enabled",
         "deep_fry_enabled",
         "magic_loop_enabled",
@@ -657,23 +676,43 @@ class TimeLoop:
         return frame
 
 
+def _grid_diff(a, b):
+    """Visible difference between stacks of grid thumbnails (..., H, W).
+
+    The plain mean hides small local changes: a blink or a lip twitch moves a
+    handful of cells and barely shifts the average of a whole frame. Adding the
+    worst single cell makes those events stand out, while the area averaging
+    that produced the grid already suppresses sensor noise.
+    """
+    d = np.abs(a - b)
+    return d.mean(axis=(-2, -1)) + d.max(axis=(-2, -1))
+
+
 class MagicLoopBuffer:
     """Rolling history of encoded processed frames for the AFK Magic Loop.
 
     Every processed output frame is stored JPEG-compressed at reduced size
-    together with a tiny grayscale thumbnail. The thumbnail makes the calm
-    window search nearly free; the JPEGs keep ten seconds of history around
+    together with a small grayscale grid (an area-average thumbnail) and the
+    crop (x, y, zoom) it was rendered with. The grids make the window search
+    nearly free; the crops let the search prefer footage framed exactly like
+    the frozen live view; the JPEGs keep ten seconds of history around
     100 MB instead of the ~1.9 GB raw frames would need.
     """
 
-    # Scoring thumbnails; small on purpose - the scan runs on the video
-    # thread once per loop pass and must stay well under a frame budget.
-    THUMB_W, THUMB_H = 80, 45
+    # Scoring grid: each cell averages a 15x15 block of the stored frame.
+    GRID_W, GRID_H = 64, 36
 
     def __init__(self, length=MAGIC_LOOP_FRAMES):
         self._frames = collections.deque(maxlen=length)
+        # Total frames ever recorded. It never resets, so a mark taken at the
+        # key press stays meaningful while old frames fall out of the deque.
+        self.count = 0
 
-    def record(self, frame):
+    def clear(self):
+        """Forget the history (frames from before an absence are stale)."""
+        self._frames.clear()
+
+    def record(self, frame, crop):
         """Encode one processed frame into the history (best effort)."""
         small = cv2.resize(frame, (MAGIC_LOOP_W, MAGIC_LOOP_H))
         ok, encoded = cv2.imencode(
@@ -681,77 +720,119 @@ class MagicLoopBuffer:
         )
         if not ok:
             return
-        thumb = cv2.cvtColor(
-            cv2.resize(small, (self.THUMB_W, self.THUMB_H)), cv2.COLOR_BGR2GRAY
+        grid = cv2.cvtColor(
+            cv2.resize(
+                small, (self.GRID_W, self.GRID_H), interpolation=cv2.INTER_AREA
+            ),
+            cv2.COLOR_BGR2GRAY,
         )
-        self._frames.append((encoded.tobytes(), thumb))
+        self._frames.append((encoded.tobytes(), grid, crop))
+        self.count += 1
 
-    def build_loop(self):
-        """Find the calmest 2-5 s window in recent history and return a player.
+    def build_loop(self, frozen_crop, upto=None):
+        """Pick the best loop from history and return a player, or None.
 
-        Every candidate window is scored by its internal motion (mean
-        difference between consecutive thumbnails, so gestures, blinks and
-        other transitions raise the score) plus double the wrap difference
-        between its last and first frame, which is the visible jump at the
-        splice. Weighting the splice higher steers the choice towards windows
-        that start and end on a stable, still frame. The scan is vectorized
-        over all window starts, so a full rebuild costs a few milliseconds
-        and is safe to repeat every loop pass. Returns None while there is
-        not enough history yet.
+        Only frames recorded before the absolute frame number `upto` are
+        considered (None = everything). A candidate is a window of 2-5 s plus
+        the crossfade tail that follows it, scored by:
+          - internal motion (blinks, gestures, head turns raise it),
+          - seam ghosting: how much the tail differs from the head it is
+            blended into, which is what the audience sees at the restart,
+          - how far its crop is from the frozen live framing, because the
+            loop is dissolved in from and out to the live view.
+        Every candidate of one length is scored in a single vectorized pass,
+        so the whole search takes a few milliseconds. Returns None while there
+        is not enough usable history yet.
         """
         frames = list(self._frames)
-        n = len(frames)
-        if n < MAGIC_LOOP_MIN_FRAMES:
+        if upto is not None:
+            first = self.count - len(frames)
+            frames = frames[: max(0, upto - first)]
+        m = len(frames)
+        if m < MAGIC_LOOP_MIN_FRAMES:
             return None
-        thumbs = np.stack([thumb for _, thumb in frames]).astype(np.int16)
-        # motion[i] = difference between frame i and i+1; prefix sums turn
-        # any window's mean motion into an O(1) lookup.
-        motion = np.mean(np.abs(np.diff(thumbs, axis=0)), axis=(1, 2))
+
+        grids = np.stack([g for _, g, _ in frames]).astype(np.int16)
+        crops = np.array([c for _, _, c in frames], dtype=np.float64)
+        fx, fy, fz = frozen_crop
+        # Crop deviation in percent of the crop width: a pan of dx (fraction
+        # of the frame) moves the picture by dx * zoom crop widths.
+        dev = 100.0 * np.maximum(
+            np.maximum(np.abs(crops[:, 0] - fx), np.abs(crops[:, 1] - fy)) * fz,
+            np.abs(crops[:, 2] - fz) / fz,
+        )
+        motion = _grid_diff(grids[:-1], grids[1:])
         prefix = np.concatenate(([0.0], np.cumsum(motion)))
 
-        max_len = min(MAGIC_LOOP_MAX_LOOP_FRAMES, n)
-        best_score, best_start, best_length = None, 0, 0
-        for length in range(
-            MAGIC_LOOP_MIN_LOOP_FRAMES, max_len + 1, MAGIC_LOOP_LENGTH_STEP
-        ):
-            starts = np.arange(n - length + 1)
-            ends = starts + length - 1
-            internal = (prefix[ends] - prefix[starts]) / (length - 1)
-            wrap = np.mean(
-                np.abs(thumbs[ends] - thumbs[starts]), axis=(1, 2)
+        blend = MAGIC_LOOP_BLEND_FRAMES
+        probes = sorted({0, blend // 3, (2 * blend) // 3, blend - 1})
+        min_len, max_len = MAGIC_LOOP_MIN_LOOP_FRAMES, MAGIC_LOOP_MAX_LOOP_FRAMES
+        best = None  # (score, start, length)
+        for length in range(min_len, max_len + 1, MAGIC_LOOP_LENGTH_STEP):
+            span = length + blend
+            if span > m:
+                break
+            starts = np.arange(m - span + 1)
+            internal = (prefix[starts + span - 1] - prefix[starts]) / (span - 1)
+            seam = np.mean(
+                [_grid_diff(grids[starts + k], grids[starts + length + k]) for k in probes],
+                axis=0,
             )
-            scores = internal + 2.0 * wrap
-            k = int(np.argmin(scores))
-            if best_score is None or scores[k] < best_score:
-                best_score = float(scores[k])
-                best_start = int(starts[k])
-                best_length = length
+            crop_dev = np.lib.stride_tricks.sliding_window_view(dev, span).max(axis=1)
+            score = (
+                internal
+                + MAGIC_LOOP_SEAM_WEIGHT * seam
+                + MAGIC_LOOP_CROP_WEIGHT * crop_dev
+            )
+            score = score * (
+                1.0
+                + MAGIC_LOOP_SHORT_PENALTY * (max_len - length) / (max_len - min_len)
+            )
+            k = int(np.argmin(score))
+            if best is None or score[k] < best[0]:
+                best = (float(score[k]), int(starts[k]), length)
+        if best is None:
+            return None
+        _, start, length = best
         return MagicLoopPlayer(
-            [jpeg for jpeg, _ in frames[best_start : best_start + best_length]]
+            [jpeg for jpeg, _, _ in frames[start : start + length + blend]],
+            length,
+            blend,
         )
 
 
 class MagicLoopPlayer:
-    """Plays a fixed seamless loop, restarting cleanly from the head.
+    """Plays a fixed loop with a crossfaded restart.
 
-    The seam needs no alpha blending: build_loop picked a window whose last
-    frame nearly matches its first, so a hard restart is invisible while
-    crossfading tail over head would only produce ghosting.
+    The stored clip is `length + blend` frames. Playback frame t of the loop
+    is clip[t] for t >= blend; for the first `blend` frames it is a mix that
+    slides from clip[length + t] (the footage that originally followed the
+    loop's last frame) to clip[t]. So the last frame of one pass continues
+    into the first frame of the next the way the real video would have.
     """
 
-    def __init__(self, encoded):
+    def __init__(self, encoded, length, blend):
         self._frames = encoded
+        self._length = length
+        self._blend = blend
         self._index = 0
+
+    def _decode(self, i):
+        return cv2.imdecode(
+            np.frombuffer(self._frames[i], np.uint8), cv2.IMREAD_COLOR
+        )
 
     def next_frame(self, out_size):
         """Return the next loop frame resized to out_size (w, h)."""
-        jpeg = cv2.imdecode(
-            np.frombuffer(self._frames[self._index % len(self._frames)], np.uint8),
-            cv2.IMREAD_COLOR,
-        )
+        t = self._index % self._length
         self._index += 1
+        frame = self._decode(t)
+        if t < self._blend:
+            weight = (t + 1) / (self._blend + 1)
+            tail = self._decode(self._length + t)
+            frame = cv2.addWeighted(tail, 1.0 - weight, frame, weight, 0.0)
         return np.ascontiguousarray(
-            cv2.resize(jpeg, out_size, interpolation=cv2.INTER_LINEAR)
+            cv2.resize(frame, out_size, interpolation=cv2.INTER_LINEAR)
         )
 
 
@@ -775,6 +856,163 @@ def apply_deep_fry(frame_bgr, saturation=2.0, contrast=1.3, shift=10):
     return cv2.merge((blue, green, red))
 
 
+# Vertex source for the shader pass: a full-screen quad passing pixel
+# coordinates through. gl_FragCoord in the fragment shader is Shadertoy's
+# fragCoord (pixels, origin bottom-left).
+SHADER_VERTEX_SOURCE = """
+#version 330
+in vec2 in_pos;
+void main() {
+    gl_Position = vec4(in_pos, 0.0, 1.0);
+}
+"""
+
+# The user file provides mainImage(out vec4 fragColor, in vec2 fragCoord),
+# Shadertoy style; this wrapper supplies the entry point, the input texture
+# (texture0, holding the BGR frame), and iResolution. The frame data and the
+# rendered result are both BGR, so shaders that preserve channel order (all
+# the brightness/pattern effects this is for) need no reordering.
+SHADER_FRAGMENT_TEMPLATE = """
+#version 330
+uniform sampler2D texture0;
+uniform vec2 iResolution;
+#define iChannel0 texture0
+{user_source}
+out vec4 out_Color;
+void main() {{
+    vec4 color;
+    mainImage(color, gl_FragCoord.xy);
+    out_Color = color;
+}}
+"""
+
+
+def list_shader_files(primary_path):
+    """Return sorted, de-duplicated .glsl files usable as shader choices.
+
+    Mirrors list_lut_files: looks next to the configured shader, in the
+    current directory, and in shaders/, so files dropped in either
+    conventional place show up in the TUI list.
+    """
+    folders = []
+    if primary_path:
+        folders.append(os.path.dirname(os.path.abspath(primary_path)))
+    folders.append(os.getcwd())
+    folders.append(os.path.join(os.getcwd(), "shaders"))
+    found = {}
+    for folder in folders:
+        if not os.path.isdir(folder):
+            continue
+        for path in glob.glob(os.path.join(folder, "*.glsl")):
+            found.setdefault(os.path.abspath(path), None)
+    return sorted(found)
+
+
+def load_shader(path):
+    """Read a .glsl fragment shader; None when the file is unusable."""
+    if not path:
+        return None
+    try:
+        with open(path) as f:
+            source = f.read()
+    except OSError as exc:
+        print(f"warning: shader file not readable: {path} ({exc})")
+        return None
+    if "void mainImage" not in source:
+        print(f"warning: shader {path} has no mainImage(); ignoring")
+        return None
+    return source
+
+
+class ShaderEngine:
+    """Compiles and runs the active .glsl shader on the GPU.
+
+    One moderngl standalone context lives inside the video daemon thread and
+    is created lazily on first use, keeping GL affinity in one place. Programs
+    are cached per file so switching shaders or re-selecting the same file
+    never recompiles; a shader that fails to compile disables the effect
+    (the live frame passes through) with a single warning.
+    """
+
+    VERTEX = SHADER_VERTEX_SOURCE
+
+    def __init__(self):
+        self._ctx = None
+        self._buffer = None
+        self._fbo = None
+        self._texture = None
+        self._size = (0, 0)
+        # path -> (program, quad VAO) or None (broken/unusable)
+        self._programs = {}
+        self._broken = set()
+
+    def _ensure_size(self, width, height):
+        """Create the GL objects for a frame size; recreate if it changed."""
+        if self._ctx is None:
+            try:
+                self._ctx = moderngl.create_standalone_context()
+            except Exception as exc:
+                print(f"warning: GPU shader context unavailable ({exc})")
+                return False
+        if self._size != (width, height):
+            self._buffer = self._ctx.buffer(
+                np.array([-1, -1, 1, -1, -1, 1, 1, 1], dtype=np.float32).tobytes()
+            )
+            self._texture = self._ctx.texture((width, height), 3, dtype="f1")
+            self._texture.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            self._texture.repeat_x = False
+            self._texture.repeat_y = False
+            self._fbo = self._ctx.simple_framebuffer((width, height), 3)
+            self._size = (width, height)
+            # The compiled VAOs reference the old-size-independent buffer, so
+            # they stay valid; drop nothing.
+        return True
+
+    def apply(self, frame_bgr, path):
+        """Run the shader on frame_bgr; return the result or the input frame."""
+        height, width = frame_bgr.shape[:2]
+        if not self._ensure_size(width, height):
+            return frame_bgr
+        entry = self._programs.get(path, False)
+        if entry is False:
+            source = load_shader(path)
+            entry = None
+            if source is not None:
+                try:
+                    program = self._ctx.program(
+                        vertex_shader=self.VERTEX,
+                        fragment_shader=SHADER_FRAGMENT_TEMPLATE.format(
+                            user_source=source
+                        ),
+                    )
+                    # The quad VAO must belong to the program it renders with.
+                    entry = (
+                        program,
+                        self._ctx.vertex_array(
+                            program, [(self._buffer, "2f", "in_pos")]
+                        ),
+                    )
+                except Exception as exc:
+                    if path not in self._broken:
+                        self._broken.add(path)
+                        print(f"warning: shader {path} failed to compile: {exc}")
+            self._programs[path] = entry
+        if entry is None:
+            return frame_bgr
+        program, quad = entry
+
+        self._texture.write(frame_bgr)
+        self._texture.use(0)
+        program["texture0"].value = 0
+        program["iResolution"].value = (float(width), float(height))
+        self._fbo.use()
+        quad.render(moderngl.TRIANGLE_STRIP)
+        data = self._fbo.read(components=3, alignment=1)
+        # The GL render is bottom-up but read() returns rows bottom-up as
+        # well, so the data is already in the camera frame's top-down order.
+        return np.frombuffer(data, dtype=np.uint8).reshape(height, width, 3)
+
+
 def build_lut_table(path):
     """Load and bake a .cube LUT into the runtime table; None when unusable."""
     lut = load_lut(path)
@@ -796,6 +1034,9 @@ class VideoPipeline(threading.Thread):
         self.state = state
         self.preview = preview
         self._stop_event = threading.Event()
+        # Created lazily inside the video thread: the GL context must live
+        # and be used on one thread only.
+        self._shader_engine = None
 
     def stop(self):
         """Ask the loop to exit; the thread finishes the current frame first."""
@@ -875,11 +1116,16 @@ class VideoPipeline(threading.Thread):
         magic_loop = MagicLoopBuffer()
         magic_player = None
         magic_on_prev = False
-        # Settling cool-down after activation before any loop is built.
-        magic_settle = max(1, int(cfg["fps"] * MAGIC_LOOP_SETTLE_SECONDS))
-        magic_settle_left = 0
+        # Crop (x, y, zoom) held while Magic Loop is on, and the history
+        # position of the key press (minus the guard) that bounds the loop.
+        magic_frozen = None
+        magic_mark = 0
+        magic_guard = max(1, int(cfg["fps"] * MAGIC_LOOP_GUARD_SECONDS))
         magic_entry_fade = max(1, int(cfg["fps"] * MAGIC_LOOP_ENTRY_FADE_SECONDS))
         magic_entry_left = 0
+        magic_exit_fade = max(1, int(cfg["fps"] * MAGIC_LOOP_EXIT_FADE_SECONDS))
+        magic_exit_left = 0
+        magic_exit_player = None
 
         while not self._stop_event.is_set():
             try:
@@ -910,38 +1156,52 @@ class VideoPipeline(threading.Thread):
                 if magic_on != magic_on_prev:
                     magic_on_prev = magic_on
                     if magic_on:
-                        # Step 1, instant tracking kill: freeze the framing in
-                        # the shared state so the crop window stops moving.
+                        # Freeze: tracking stops and the crop stays exactly
+                        # where it is. The history was rendered with this
+                        # framing, so any piece of it can be spliced into the
+                        # live view without a pan or zoom jump.
                         if state["tracking_enabled"]:
                             self.state.update(tracking_enabled=False)
                             state["tracking_enabled"] = False
-                        # Step 2, settling grace period: no loop is built or
-                        # played until button-press motion has flushed out of
-                        # the history.
+                        magic_frozen = (curr_x, curr_y, curr_zoom)
+                        zoom_vel = 0.0
+                        # Only footage from before the person reached for the
+                        # key may be used; what comes after is not trusted.
+                        magic_mark = magic_loop.count - magic_guard
                         magic_player = None
-                        magic_settle_left = magic_settle
                         magic_entry_left = 0
+                        magic_exit_left = 0
+                        magic_exit_player = None
                     else:
-                        # Resume live capture; tracking control returns via
-                        # the TUI switch.
+                        # Dissolve back to live and drop the old history: it
+                        # now shows the person leaving or an empty chair.
+                        magic_exit_player = magic_player
+                        magic_exit_left = (
+                            magic_exit_fade if magic_player is not None else 0
+                        )
                         magic_player = None
-                        magic_settle_left = 0
                         magic_entry_left = 0
+                        magic_frozen = None
+                        magic_loop.clear()
 
                 if magic_on and magic_player is None:
-                    if magic_settle_left > 0:
-                        magic_settle_left -= 1
-                    else:
-                        # Step 3, optimal fragment selection: only after the
-                        # cool-down, pick the calmest, best-matching window.
-                        player = magic_loop.build_loop()
-                        if player is not None:
-                            magic_player = player
-                            magic_entry_left = magic_entry_fade
+                    # The loop is picked the moment the key is pressed, so the
+                    # audience never sees the person leaving. Without enough
+                    # history before the press (e.g. started with
+                    # --magic-loop) keep the live feed and retry every frame
+                    # with whatever has been recorded, minus the guard.
+                    player = magic_loop.build_loop(magic_frozen, upto=magic_mark)
+                    if player is None:
+                        player = magic_loop.build_loop(
+                            magic_frozen, upto=magic_loop.count - magic_guard
+                        )
+                    if player is not None:
+                        magic_player = player
+                        magic_entry_left = magic_entry_fade
 
-                # The plain Time Loop replay skips the whole image pipeline,
-                # but Magic Loop keeps it running (tracking off) so the
-                # history settles with the frozen framing.
+                # The plain Time Loop replay skips the whole image pipeline.
+                # Magic Loop keeps it running (crop frozen) until its loop is
+                # chosen, and the live feed still dissolves in and out of it.
                 looping = (
                     bool(state["time_loop_enabled"])
                     and time_loop.ready
@@ -950,50 +1210,55 @@ class VideoPipeline(threading.Thread):
                 if looping:
                     out_frame = time_loop.next_frame()
                 else:
-                    if not state["tracking_enabled"]:
-                        # Disabled: ease the view back to the base framing.
-                        target_x, target_y, target_zoom = 0.5, 0.45, base_zoom
+                    if magic_on:
+                        # Magic Loop holds the crop exactly as frozen at the
+                        # key press: no detection, no pan, no zoom spring.
                         self.state.set_telemetry(tracking=False)
-                    elif frame_idx % detect_every == 0:
-                        small = cv2.resize(frame, (DETECT_W, DETECT_H))
-                        rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-                        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-                        result = detector.detect(mp_image)
-                        centers = face_centers(result.detections, DETECT_W, DETECT_H)
-                        if centers:
-                            tx = sum(c[0] for c in centers) / len(centers)
-                            ty = sum(c[1] for c in centers) / len(centers)
-                            if abs(tx - curr_x) > deadzone:
-                                target_x = tx
-                            if abs(ty - curr_y) > deadzone:
-                                target_y = ty
-                            wanted = fit_zoom(
-                                largest_face_height(result.detections, DETECT_H),
-                                base_zoom,
-                                max_head,
-                                head_ratio,
-                            )
-                            target_zoom = pick_target_zoom(
-                                target_zoom, wanted, zoom_deadzone
-                            )
-                        self.state.set_telemetry(tracking=bool(centers))
+                    else:
+                        if not state["tracking_enabled"]:
+                            # Disabled: ease the view back to the base framing.
+                            target_x, target_y, target_zoom = 0.5, 0.45, base_zoom
+                            self.state.set_telemetry(tracking=False)
+                        elif frame_idx % detect_every == 0:
+                            small = cv2.resize(frame, (DETECT_W, DETECT_H))
+                            rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+                            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                            result = detector.detect(mp_image)
+                            centers = face_centers(result.detections, DETECT_W, DETECT_H)
+                            if centers:
+                                tx = sum(c[0] for c in centers) / len(centers)
+                                ty = sum(c[1] for c in centers) / len(centers)
+                                if abs(tx - curr_x) > deadzone:
+                                    target_x = tx
+                                if abs(ty - curr_y) > deadzone:
+                                    target_y = ty
+                                wanted = fit_zoom(
+                                    largest_face_height(result.detections, DETECT_H),
+                                    base_zoom,
+                                    max_head,
+                                    head_ratio,
+                                )
+                                target_zoom = pick_target_zoom(
+                                    target_zoom, wanted, zoom_deadzone
+                                )
+                            self.state.set_telemetry(tracking=bool(centers))
 
-                    # Exponential moving average smooths panning even though
-                    # detection only updates every detect_every frames.
-                    smoothing = float(state["smoothing"])
-                    curr_x += (target_x - curr_x) * smoothing
-                    curr_y += (target_y - curr_y) * smoothing
+                        # Exponential moving average smooths panning even though
+                        # detection only updates every detect_every frames.
+                        smoothing = float(state["smoothing"])
+                        curr_x += (target_x - curr_x) * smoothing
+                        curr_y += (target_y - curr_y) * smoothing
 
-                    # Dolly zoom: damped spring, then clamped to the valid range.
-                    curr_zoom, zoom_vel = spring_step(
-                        curr_zoom,
-                        zoom_vel,
-                        max(1.0, min(base_zoom, target_zoom)),
-                        omega,
-                        zeta,
-                        dt,
-                    )
-                    curr_zoom = max(1.0, min(base_zoom, curr_zoom))
+                        # Dolly zoom: damped spring, then clamped to the valid range.
+                        curr_zoom, zoom_vel = spring_step(
+                            curr_zoom,
+                            zoom_vel,
+                            max(1.0, min(base_zoom, target_zoom)),
+                            omega,
+                            zeta,
+                            dt,
+                        )
+                        curr_zoom = max(1.0, min(base_zoom, curr_zoom))
 
                     # Use actual frame dimensions: the camera may negotiate a
                     # different resolution than requested.
@@ -1026,30 +1291,47 @@ class VideoPipeline(threading.Thread):
                             threshold=int(cfg["sharpen_threshold"]),
                             sigma=float(cfg["sharpen_sigma"]),
                         )
+                    if state["shader_enabled"] and state["shader_file"]:
+                        if self._shader_engine is None:
+                            self._shader_engine = ShaderEngine()
+                        out_frame = self._shader_engine.apply(
+                            out_frame, state["shader_file"]
+                        )
                     if state["deep_fry_enabled"]:
                         out_frame = apply_deep_fry(out_frame)
 
                     # Feed both replay buffers with the pure processed frame;
                     # blending below must never leak into recorded history.
                     out_frame = time_loop.record(out_frame)
-                    # The ~2 ms encode fits the frame budget at 30 fps and
-                    # keeps the AFK history current for loop regeneration.
-                    magic_loop.record(out_frame)
+                    # The ~2 ms encode fits the frame budget at 30 fps. Once a
+                    # loop is playing, recording stops: it would only capture
+                    # the empty chair, and the history is cleared on exit.
+                    if magic_player is None:
+                        magic_loop.record(out_frame, (curr_x, curr_y, curr_zoom))
 
-                    if magic_player is not None:
-                        # Step 4, seamless continuous playback: the selected
-                        # fragment loops with a clean restart at the head (the
-                        # seam was chosen to match, so no alpha crossfade and
-                        # no ghosting); only the entry dissolves from live.
-                        loop_frame = magic_player.next_frame((out_w, out_h))
-                        if magic_entry_left > 0:
-                            alpha = 1.0 - magic_entry_left / magic_entry_fade
-                            out_frame = cv2.addWeighted(
-                                out_frame, 1.0 - alpha, loop_frame, alpha, 0.0
-                            )
-                            magic_entry_left -= 1
-                        else:
-                            out_frame = loop_frame
+                if magic_player is not None:
+                    # Seamless continuous playback: the crossfade seam is
+                    # inside the player; only the entry dissolves from live.
+                    loop_frame = magic_player.next_frame((out_w, out_h))
+                    if magic_entry_left > 0:
+                        alpha = 1.0 - magic_entry_left / magic_entry_fade
+                        out_frame = cv2.addWeighted(
+                            out_frame, 1.0 - alpha, loop_frame, alpha, 0.0
+                        )
+                        magic_entry_left -= 1
+                    else:
+                        out_frame = loop_frame
+                elif magic_exit_left > 0:
+                    # Magic Loop was just switched off: the loop keeps
+                    # running underneath while it dissolves into the live feed.
+                    loop_frame = magic_exit_player.next_frame((out_w, out_h))
+                    alpha = magic_exit_left / magic_exit_fade
+                    out_frame = cv2.addWeighted(
+                        out_frame, 1.0 - alpha, loop_frame, alpha, 0.0
+                    )
+                    magic_exit_left -= 1
+                    if magic_exit_left == 0:
+                        magic_exit_player = None
 
                 cam.send(out_frame)
                 cam.sleep_until_next_frame()
@@ -1126,6 +1408,16 @@ def parse_args(argv=None):
         help="AFK mode: replay a seamless crossfaded loop of recent video",
     )
     p.add_argument(
+        "--shader",
+        help="path to a .glsl fragment shader (overrides ini)",
+    )
+    p.add_argument(
+        "--shader-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="enable/disable GPU shader processing",
+    )
+    p.add_argument(
         "--preview", action="store_true", help="show a debug preview window (costs CPU)"
     )
     p.add_argument(
@@ -1170,6 +1462,10 @@ def main(argv=None):
         cfg["deep_fry_enabled"] = args.deep_fry
     if args.magic_loop is not None:
         cfg["magic_loop_enabled"] = args.magic_loop
+    if args.shader is not None:
+        cfg["shader_file"] = args.shader
+    if args.shader_enabled is not None:
+        cfg["shader_enabled"] = args.shader_enabled
 
     base_dir = (
         os.path.dirname(os.path.abspath(config_path)) if config_path else os.getcwd()
