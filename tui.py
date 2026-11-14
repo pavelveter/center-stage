@@ -11,7 +11,7 @@ import os
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.widgets import (
     Button,
@@ -19,6 +19,7 @@ from textual.widgets import (
     Header,
     Input,
     Label,
+    Rule,
     Select,
     Static,
     Switch,
@@ -34,7 +35,7 @@ SWITCHES = {
     "sw-lut": ("LUT Grading", "lut_enabled"),
     "sw-sharpen": ("Smart Sharpen", "sharpen_enabled"),
     "sw-loop": ("Time Loop (1s)", "time_loop_enabled"),
-    "sw-fry": ("Deep Fry / Glitch", "deep_fry_enabled"),
+    "sw-fry": ("Deep Fry", "deep_fry_enabled"),
 }
 
 # Input suffix -> (label, SharedState key, minimum, maximum, button step).
@@ -97,23 +98,27 @@ class CenterStageApp(App):
     }
     .row {
         height: 1;
+        margin-bottom: 1;
     }
     .name {
-        width: 18;
+        width: 16;
+        margin-right: 2;
     }
     .row Switch {
         width: 6;
         height: 1;
         padding: 0;
         border: none;
-        margin: 0;
+        margin: 0 4 0 0;
     }
     .switch-spacer {
-        width: 6;
+        width: 10;
+        margin-right: 4;
     }
     .tuner-name {
         width: 9;
         color: $text-muted;
+        margin-right: 1;
     }
     .row Button {
         width: 3;
@@ -152,6 +157,11 @@ class CenterStageApp(App):
         Binding("s", "toggle_sharpen", "Sharpen", priority=True),
         Binding("m", "toggle_time_loop", "Loop", priority=True),
         Binding("f", "toggle_deep_fry", "Fry", priority=True),
+        Binding("]", "next_lut", "Next LUT", priority=True),
+        Binding("[", "prev_lut", "Prev LUT", priority=True),
+        # Russian layout equivalents of the bracket keys.
+        Binding("ъ", "next_lut", show=False, priority=True),
+        Binding("х", "prev_lut", show=False, priority=True),
     ]
 
     def __init__(self, cfg, config_path, preview=False):
@@ -200,14 +210,19 @@ class CenterStageApp(App):
         yield Header()
         with Vertical(id="panel"):
             yield Static("TELEMETRY", classes="panel-title first")
+            yield Static("", classes="spacer")
             yield Static("", id="telemetry-body")
             yield Static("starting", id="notice", classes="notice")
+            yield Rule(classes="rule")
             yield Static("CONTROLS", classes="panel-title")
+            yield Static("", classes="spacer")
             yield from self.switch_row(
                 "Face Tracking", "sw-tracking", values, tuner="zoom"
             )
             # No switch on this row: spacers keep the tuner columns aligned.
-            yield from self.switch_row("Pan Smoothing", None, values, tuner="smoothing", tuner_name="")
+            yield from self.switch_row(
+                "Pan Smoothing", None, values, tuner="smoothing", tuner_name=""
+            )
             yield from self.switch_row(
                 "LUT Grading", "sw-lut", values, tuner="lutscale"
             )
@@ -224,7 +239,7 @@ class CenterStageApp(App):
                 "Smart Sharpen", "sw-sharpen", values, tuner="sharpen"
             )
             yield from self.switch_row("Time Loop (1s)", "sw-loop", values)
-            yield from self.switch_row("Deep Fry / Glitch", "sw-fry", values)
+            yield from self.switch_row("Deep Fry", "sw-fry", values)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -278,9 +293,7 @@ class CenterStageApp(App):
         if revision is None:
             return True
         try:
-            tracker.save_config(
-                self.config_path, self.state.config(self.cfg)
-            )
+            tracker.save_config(self.config_path, self.state.config(self.cfg))
         except OSError as exc:
             self.set_notice(f"save failed: {exc}")
             return False
@@ -346,6 +359,34 @@ class CenterStageApp(App):
 
     # --- LUT selection ---------------------------------------------------
 
+    def cycle_lut(self, step: int) -> None:
+        """Select the next/previous .cube file and bake it in the background."""
+        if not self.lut_files:
+            self.set_notice("no .cube files found in LUT/ or the current directory")
+            return
+        current = self.state.snapshot()["lut_file"]
+        try:
+            index = self.lut_files.index(current)
+        except ValueError:
+            # Nothing selected yet: move to the first file going forward and
+            # to the last one going backward.
+            index = -1 if step > 0 else 0
+        next_index = tracker.cycle_index(index, len(self.lut_files), step)
+        path = self.lut_files[next_index]
+        if path == current and current:
+            return
+        self.lut_request = path
+        self.state.update(lut_file=path)
+        self.query_one("#lut-select", Select).value = path
+        self.set_notice(f"LUT: {os.path.basename(path)}")
+        self.bake_lut(path)
+
+    def action_next_lut(self) -> None:
+        self.cycle_lut(1)
+
+    def action_prev_lut(self) -> None:
+        self.cycle_lut(-1)
+
     def on_select_changed(self, event: Select.Changed) -> None:
         """Bake the chosen .cube file, or drop grading on a blank selection."""
         if event.select.id != "lut-select":
@@ -357,6 +398,7 @@ class CenterStageApp(App):
         self.state.update(lut_file=path)
         self.set_notice(f"loading {os.path.basename(path)}")
         self.bake_lut(path)
+
     @work(thread=True, exclusive=True, group="lut")
     def bake_lut(self, path: str) -> None:
         """Bake a LUT in the background so the video stream never stalls."""

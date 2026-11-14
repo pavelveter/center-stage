@@ -501,6 +501,52 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
         finally:
             tracker.VideoPipeline = original
 
+    async def test_bracket_keys_cycle_luts(self):
+        import os
+        import tempfile
+
+        import tui
+
+        original = tracker.VideoPipeline
+        tracker.VideoPipeline = self.FakePipeline
+        try:
+            cfg = dict(tracker.DEFAULTS)
+            cfg["lut_file"] = ""
+            cfg["lut_enabled"] = True
+            app = tui.CenterStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
+            async with app.run_test(size=(100, 45)) as pilot:
+                await pilot.pause(0.1)
+                files = app.lut_files
+                self.assertTrue(files)
+
+                await pilot.press("]")
+                await pilot.pause(0.3)
+                self.assertEqual(app.state.snapshot()["lut_file"], files[0])
+
+                await pilot.press("]")
+                await pilot.pause(0.3)
+                self.assertEqual(app.state.snapshot()["lut_file"], files[1])
+
+                await pilot.press("[")
+                await pilot.pause(0.3)
+                self.assertEqual(app.state.snapshot()["lut_file"], files[0])
+
+                # Russian layout equivalents: the key where ] sits on a Russian
+                # keyboard produces ъ (next) and [ produces х (previous).
+                await pilot.press("ъ")
+                await pilot.pause(0.3)
+                self.assertEqual(app.state.snapshot()["lut_file"], files[1])
+                await pilot.press("х")
+                await pilot.pause(0.3)
+                self.assertEqual(app.state.snapshot()["lut_file"], files[0])
+
+                # Going backward from the first file wraps to the last.
+                await pilot.press("[")
+                await pilot.pause(0.3)
+                self.assertEqual(app.state.snapshot()["lut_file"], files[-1])
+        finally:
+            tracker.VideoPipeline = original
+
 
 
 if __name__ == "__main__":
