@@ -12,6 +12,7 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.widgets import (
     Button,
     Footer,
@@ -76,7 +77,7 @@ class CenterStageApp(App):
         layout: vertical;
     }
     #telemetry {
-        width: 42;
+        width: 47;
         height: auto;
         padding: 0 1;
         border: round $primary;
@@ -153,6 +154,16 @@ class CenterStageApp(App):
                 yield Static("TELEMETRY", classes="panel-title")
                 yield Static(id="telemetry-body")
                 yield Static("starting", id="notice", classes="notice")
+                yield Static("TUNING", classes="panel-title")
+                for suffix, (label, key, _, _, _) in TUNING.items():
+                    with Horizontal(classes="row"):
+                        yield Label(label, classes="name")
+                        yield Button("-", id=f"dec-{suffix}")
+                        yield Input(
+                            value=format_value(suffix, values[key]),
+                            id=f"in-{suffix}",
+                        )
+                        yield Button("+", id=f"inc-{suffix}")
             with VerticalScroll(id="controls"):
                 yield Static("FEATURES", classes="panel-title")
                 for widget_id, (label, key) in SWITCHES.items():
@@ -167,16 +178,6 @@ class CenterStageApp(App):
                     ],
                     id="luts",
                 )
-                yield Static("TUNING", classes="panel-title")
-                for suffix, (label, key, _, _, _) in TUNING.items():
-                    with Horizontal(classes="row"):
-                        yield Label(label, classes="name")
-                        yield Button("-", id=f"dec-{suffix}")
-                        yield Input(
-                            value=format_value(suffix, values[key]),
-                            id=f"in-{suffix}",
-                        )
-                        yield Button("+", id=f"inc-{suffix}")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -210,11 +211,18 @@ class CenterStageApp(App):
             f"Virtual camera {values['device']}",
             f"Status         {values['status']}",
         ]
-        self.query_one("#telemetry-body", Static).update("\n".join(lines))
+        try:
+            self.query_one("#telemetry-body", Static).update("\n".join(lines))
+        except NoMatches:
+            # A shutdown tick can fire after the DOM is gone.
+            pass
 
     def set_notice(self, message: str) -> None:
         """Show the latest control/save message in the telemetry panel."""
-        self.query_one("#notice", Static).update(message)
+        try:
+            self.query_one("#notice", Static).update(message)
+        except NoMatches:
+            pass
 
     def on_resize(self, event) -> None:
         """Stack the panels vertically on narrow terminals."""
