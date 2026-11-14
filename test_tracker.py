@@ -642,11 +642,15 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 self.assertFalse(app.state.snapshot()["tracking_enabled"])
 
-                await pilot.press("m")
+                await pilot.press("c")
+                await pilot.pause()
+                self.assertTrue(app.state.snapshot()["lut_enabled"])
+
+                await pilot.press("l")
                 await pilot.pause()
                 self.assertTrue(app.state.snapshot()["time_loop_enabled"])
 
-                await pilot.press("g")
+                await pilot.press("m")
                 await pilot.pause()
                 self.assertTrue(app.state.snapshot()["magic_loop_enabled"])
                 self.assertTrue(app.query_one("#sw-magic", tui.Switch).value)
@@ -680,7 +684,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 tracking = app.query_one("#sw-tracking", tui.Switch)
                 self.assertTrue(tracking.value)
 
-                await pilot.press("g")
+                await pilot.press("m")
                 await pilot.pause()
                 # Magic on: tracking forced off, switch dimmed and locked.
                 state = app.state.snapshot()
@@ -689,7 +693,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(tracking.value)
                 self.assertTrue(tracking.disabled)
 
-                await pilot.press("g")
+                await pilot.press("m")
                 await pilot.pause()
                 # Magic off: the previous tracking state comes back.
                 state = app.state.snapshot()
@@ -720,7 +724,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(tracking.value)
                 self.assertTrue(tracking.disabled)
 
-                await pilot.press("g")
+                await pilot.press("m")
                 await pilot.pause()
                 # Turning Magic Loop off restores the configured behavior.
                 self.assertTrue(app.state.snapshot()["tracking_enabled"])
@@ -749,7 +753,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(app.query_one("#in-lutscale", tui.Input).disabled)
                 self.assertTrue(app.query_one("#in-sharpen", tui.Input).disabled)
 
-                await pilot.press("l")
+                await pilot.press("c")
                 await pilot.press("s")
                 await pilot.pause()
                 self.assertFalse(app.query_one("#lut-select", tui.Select).disabled)

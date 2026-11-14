@@ -22,10 +22,10 @@ thread has opened the camera and the virtual-camera backend.
 | --- | --- |
 | `q` | quit (settings are saved first) |
 | `t` | toggle face tracking |
-| `l` | toggle LUT color grading |
+| `c` | toggle LUT color grading |
 | `s` | toggle smart sharpening |
-| `m` | toggle the one-second time loop |
-| `g` | toggle Magic Loop (AFK) |
+| `l` | toggle the one-second time loop |
+| `m` | toggle Magic Loop (AFK) |
 | `f` | toggle deep fry / glitch |
 | `]` / `[` | cycle to the next / previous `.cube` LUT (Russian layout: `ъ` / `х`) |
 
@@ -62,7 +62,7 @@ Disabling face tracking eases the view back to the base zoom, centered at
 
 ## Magic Loop (AFK)
 
-Turning on *Magic Loop* (key `g`) freezes the published video into a seamless
+Turning on *Magic Loop* (key `m`) freezes the published video into a seamless
 loop so you can step away from a call:
 
 - Face tracking is forced off (its switch dims and locks) and the previous

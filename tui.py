@@ -154,14 +154,18 @@ class CenterStageApp(App):
     BINDINGS = [
         Binding("q", "shutdown", "Quit", priority=True),
         Binding("t", "toggle_tracking", "Tracking", priority=True),
-        Binding("l", "toggle_lut", "LUT", priority=True),
+        Binding("c", "toggle_lut", "LUT", priority=True),
         Binding("s", "toggle_sharpen", "Sharpen", priority=True),
-        Binding("m", "toggle_time_loop", "Loop", priority=True),
-        Binding("g", "toggle_magic_loop", "Magic", priority=True),
+        Binding("l", "toggle_time_loop", "Loop", priority=True),
+        Binding("m", "toggle_magic_loop", "Magic", priority=True),
         Binding("f", "toggle_deep_fry", "Fry", priority=True),
         Binding("]", "next_lut", "Next LUT", priority=True),
         Binding("[", "prev_lut", "Prev LUT", priority=True),
-        # Russian layout equivalents of the bracket keys.
+        # Russian layout equivalents: c/l/m sit on с/д/ь and the bracket keys
+        # on ъ/х under the ЙЦУКЕН layout.
+        Binding("с", "toggle_lut", show=False, priority=True),
+        Binding("д", "toggle_time_loop", show=False, priority=True),
+        Binding("ь", "toggle_magic_loop", show=False, priority=True),
         Binding("ъ", "next_lut", show=False, priority=True),
         Binding("х", "prev_lut", show=False, priority=True),
     ]
