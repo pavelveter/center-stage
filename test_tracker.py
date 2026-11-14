@@ -1131,6 +1131,60 @@ class TestLutDiscovery(unittest.TestCase):
         )
 
 
+class TestQuietNativeStderr(unittest.TestCase):
+    def test_detector_setup_logs_are_silenced(self):
+        """Native LiteRT logs at detector create/close never reach stderr."""
+        import subprocess
+        import sys
+
+        code = (
+            "import sys\n"
+            "import tracker\n"
+            "options = tracker.vision.FaceDetectorOptions(\n"
+            "    base_options=tracker.mp_python.BaseOptions(\n"
+            "        model_asset_path=tracker.ensure_model()))\n"
+            "with tracker.quiet_native_stderr():\n"
+            "    ctx = tracker.vision.FaceDetector.create_from_options(options)\n"
+            "    detector = ctx.__enter__()\n"
+            "detector.detect  # attribute access proves it is live\n"
+            "with tracker.quiet_native_stderr():\n"
+            "    ctx.__exit__(None, None, None)\n"
+            "sys.stderr.write('AFTER-MARK\\n')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("INFO:", result.stderr)
+        self.assertNotIn("TensorFlow Lite", result.stderr)
+        # stderr outside the silenced windows still reaches the terminal.
+        self.assertIn("AFTER-MARK", result.stderr)
+
+    def test_quiet_native_stderr_swallows_fd2_writes_only(self):
+        import os
+        import subprocess
+        import sys
+
+        code = (
+            "import os, sys, tracker\n"
+            "with tracker.quiet_native_stderr():\n"
+            "    os.write(2, b'HIDDEN\\n')\n"
+            "os.write(2, b'VISIBLE\\n')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("HIDDEN", result.stderr)
+        self.assertIn("VISIBLE", result.stderr)
+
+
 class TestVideoPipeline(unittest.TestCase):
     def test_processes_frames_and_reports_telemetry(self):
         import time

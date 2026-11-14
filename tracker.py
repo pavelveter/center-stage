@@ -11,6 +11,7 @@ changed live in the TUI, and are written back when they change.
 import argparse
 import collections
 import configparser
+import contextlib
 import glob
 import math
 import os
@@ -160,6 +161,28 @@ MODEL_PATH = os.path.join(MODEL_DIR, "blaze_face_short_range.tflite")
 # Detection runs on a small frame: faces are still found reliably while keeping
 # preprocessing cost low and stable regardless of the capture resolution.
 DETECT_W, DETECT_H = 640, 360
+
+
+@contextlib.contextmanager
+def quiet_native_stderr():
+    """Silence MediaPipe's native C++ stderr logs at detector setup and close.
+
+    MediaPipe 1.2+ initializes LiteRT, whose absl logging writes INFO lines
+    straight to file descriptor 2; no environment variable suppresses them
+    (GLOG_minloglevel and MEDIAPIPE_CPP_LOG_LEVEL are both ignored). Inside
+    the Textual TUI they trash the screen. Only detector creation and close
+    are covered - milliseconds of native init - so real warnings from the
+    rest of the pipeline still reach the terminal.
+    """
+    saved = os.dup(2)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, 2)
+        yield
+    finally:
+        os.dup2(saved, 2)
+        os.close(saved)
+        os.close(devnull)
 
 
 def ensure_model():
@@ -1576,17 +1599,24 @@ class VideoPipeline(threading.Thread):
                 )
                 return
 
-            with (
-                vision.FaceDetector.create_from_options(options) as detector,
-                pyvirtualcam.Camera(
+            # Native LiteRT logs land on the terminal during detector
+            # create/close; scope the silencing to exactly those two points
+            # instead of the whole pipeline so real errors stay visible.
+            with quiet_native_stderr():
+                detector_ctx = vision.FaceDetector.create_from_options(options)
+                detector = detector_ctx.__enter__()
+            try:
+                with pyvirtualcam.Camera(
                     width=cfg["out_w"],
                     height=cfg["out_h"],
                     fps=int(cfg["fps"]),
                     fmt=pyvirtualcam.PixelFormat.BGR,
-                ) as cam,
-            ):
-                self.state.set_telemetry(device=cam.device, status="running")
-                self._loop(cap, detector, cam)
+                ) as cam:
+                    self.state.set_telemetry(device=cam.device, status="running")
+                    self._loop(cap, detector, cam)
+            finally:
+                with quiet_native_stderr():
+                    detector_ctx.__exit__(None, None, None)
         except Exception as exc:
             import traceback
 
