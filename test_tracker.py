@@ -283,7 +283,7 @@ class TestMagicLoop(unittest.TestCase):
             buf.record(still)
         self.assertIsNone(buf.build_loop())
 
-    def test_player_crossfades_and_wraps(self):
+    def test_player_plays_in_order_and_restarts_cleanly(self):
         import cv2
         import numpy as np
 
@@ -295,44 +295,14 @@ class TestMagicLoop(unittest.TestCase):
             self.assertTrue(ok)
             encoded.append(jpeg.tobytes())
         player = tracker.MagicLoopPlayer(encoded)
-        fade = n - 2  # clamped from MAGIC_LOOP_FADE by the short loop
-        self.assertEqual(player._fade, fade)
         out_size = (320, 180)
-        for _ in range(n):
-            player.next_frame(out_size)
-        # After one pass the playhead resumes past the crossfaded head.
-        self.assertEqual(player._index, fade + 1)
-        # The wrap is reported so the pipeline can pull a fresh loop.
-        self.assertTrue(player.pass_done)
-        player.pass_done = False
-        # The final faded frame is exactly the head frame it blends into.
-        tail = player.next_frame(out_size)  # i == n - 1, alpha == 1
-        head = cv2.resize(
-            cv2.imdecode(
-                np.frombuffer(encoded[fade], np.uint8), cv2.IMREAD_COLOR
-            ),
-            out_size,
-            interpolation=cv2.INTER_LINEAR,
-        )
-        self.assertTrue(np.allclose(tail, head, atol=1))
-        self.assertEqual(tail.shape, (180, 320, 3))
-
-    def test_short_loop_without_fade_wraps_to_start(self):
-        import cv2
-        import numpy as np
-
-        encoded = []
-        for i in range(2):
-            frame = np.full((60, 80, 3), 100, dtype=np.uint8)
-            ok, jpeg = cv2.imencode(".jpg", frame)
-            self.assertTrue(ok)
-            encoded.append(jpeg.tobytes())
-        player = tracker.MagicLoopPlayer(encoded)
-        self.assertEqual(player._fade, 0)
-        player.next_frame((80, 60))
-        player.next_frame((80, 60))
-        self.assertEqual(player._index, 0)
-        self.assertTrue(player.pass_done)
+        frames = [player.next_frame(out_size) for _ in range(n + 2)]
+        # Every frame plays in recording order, with no crossfade blending.
+        for a, b in zip(frames[: n - 1], frames[1:n]):
+            self.assertLess(int(a.mean()), int(b.mean()))
+        # The wrap restarts exactly from the head frame.
+        self.assertTrue(np.array_equal(frames[n], frames[0]))
+        self.assertTrue(np.array_equal(frames[n + 1], frames[1]))
 
 
 class TestLutDiscovery(unittest.TestCase):
@@ -529,27 +499,31 @@ class TestVideoPipeline(unittest.TestCase):
             ),
         ):
             pipeline.start()
-            # Enough frames for the history to fill, the first loop (built
-            # from the moving era) to play, and a fresh loop to be pulled
-            # from the still era that follows.
+            # Enough frames for the settling period, the loop build, the
+            # entry dissolve, and several full passes of the frozen loop.
             deadline = time.monotonic() + 12.0
-            while time.monotonic() < deadline and len(sent) < 600:
+            while time.monotonic() < deadline and len(sent) < 700:
                 time.sleep(0.01)
             pipeline.stop()
             pipeline.join(2.0)
 
         self.assertFalse(pipeline.is_alive())
-        self.assertGreater(len(sent), 400)
-        bright = [int(frame.max()) for frame in sent]
-        # Mid-stream: the live scene went still at frame 120, yet published
-        # frames still show the bright column - recorded moving-era content
-        # is being replayed, not the live feed.
-        self.assertTrue(any(value >= 200 for value in bright[140:320]))
-        # End: a regenerated loop from the newest (still) history plays - a
-        # statically locked slice would keep showing the moving column.
-        tail = {frame.tobytes() for frame in sent[-120:]}
-        self.assertEqual(len(tail), 1)
-        self.assertLess(bright[-1], 200)
+        self.assertGreater(len(sent), 500)
+        # Settling grace: the first frames after activation are still the
+        # live feed - distinct, moving-column frames, not a loop.
+        early = {frame.tobytes() for frame in sent[:40]}
+        self.assertGreater(len(early), 35)
+        self.assertTrue(any(int(frame.max()) >= 200 for frame in sent[:40]))
+        # Then the frozen loop repeats exactly: find its period in the tail
+        # and verify every cycle is identical (clean restart, no crossfades).
+        tail = sent[-400:]
+        period = next(
+            k
+            for k in range(55, 200)
+            if np.array_equal(tail[k], tail[0])
+        )
+        for k in range(period, len(tail)):
+            self.assertTrue(np.array_equal(tail[k], tail[k - period]))
 
 
 class TestMainCli(unittest.TestCase):

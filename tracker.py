@@ -114,17 +114,19 @@ TIME_LOOP_FRAMES = 30
 MAGIC_LOOP_FRAMES = 300
 MAGIC_LOOP_W, MAGIC_LOOP_H = 960, 540
 MAGIC_LOOP_JPEG_QUALITY = 85
-# Crossfade length in frames at the splice between loop end and start.
-MAGIC_LOOP_FADE = 12
+# Settling grace period after activation: tracking was just killed, so any
+# motion from hitting the button flushes out of the history before a loop is
+# selected. No loop is built or played during this cool-down.
+MAGIC_LOOP_SETTLE_SECONDS = 1.75
 # Need three seconds of history before a loop can be built at all.
 MAGIC_LOOP_MIN_FRAMES = 90
+# Seconds of dissolve when switching from the live feed into the loop.
+MAGIC_LOOP_ENTRY_FADE_SECONDS = 0.5
 # The loop itself must be 2-5 seconds: short enough segments look like a
 # nervous stutter, long ones stop feeling "frozen".
 MAGIC_LOOP_MIN_LOOP_FRAMES = 60
 MAGIC_LOOP_MAX_LOOP_FRAMES = 150
 MAGIC_LOOP_LENGTH_STEP = 10
-# Seconds of dissolve when switching from the live feed into the loop.
-MAGIC_LOOP_ENTRY_FADE_SECONDS = 0.5
 
 # Face detector model is downloaded once and cached in the user's cache dir,
 # so the repo stays free of binary assets and subsequent starts are offline.
@@ -730,54 +732,27 @@ class MagicLoopBuffer:
 
 
 class MagicLoopPlayer:
-    """Plays a fixed seamless loop with a short crossfade at the splice.
+    """Plays a fixed seamless loop, restarting cleanly from the head.
 
-    The last MAGIC_LOOP_FADE frames of the loop are alpha-blended with the
-    frames right after the start, so wrapping from the end back to the head
-    never produces a visible jump. The blended head frames are skipped on
-    later passes because they were already shown through the fade.
+    The seam needs no alpha blending: build_loop picked a window whose last
+    frame nearly matches its first, so a hard restart is invisible while
+    crossfading tail over head would only produce ghosting.
     """
 
-    def __init__(self, encoded, fade=MAGIC_LOOP_FADE):
+    def __init__(self, encoded):
         self._frames = encoded
-        # A loop too short to fade would blend a frame with itself.
-        self._fade = max(0, min(fade, len(encoded) - 2))
         self._index = 0
-        # Set when the playhead wraps; the pipeline uses it to pull a fresh
-        # loop from the newest history and clears it again.
-        self.pass_done = False
-
-    def _decode(self, i, out_size):
-        jpeg = cv2.imdecode(
-            np.frombuffer(self._frames[i], np.uint8), cv2.IMREAD_COLOR
-        )
-        return cv2.resize(jpeg, out_size, interpolation=cv2.INTER_LINEAR)
 
     def next_frame(self, out_size):
         """Return the next loop frame resized to out_size (w, h)."""
-        n = len(self._frames)
-        fade = self._fade
-        i = self._index
-        if fade and i >= n - fade:
-            k = i - (n - fade)
-            alpha = (k + 1) / fade
-            frame = cv2.addWeighted(
-                self._decode(i, out_size),
-                1.0 - alpha,
-                self._decode(k + 1, out_size),
-                alpha,
-                0.0,
-            )
-        else:
-            frame = self._decode(i, out_size)
-        if i + 1 >= n:
-            # The crossfade already revealed frames 1..fade, so later passes
-            # resume right after them; without a fade, wrap to the start.
-            self._index = fade + 1 if fade else 0
-            self.pass_done = True
-        else:
-            self._index = i + 1
-        return np.ascontiguousarray(frame)
+        jpeg = cv2.imdecode(
+            np.frombuffer(self._frames[self._index % len(self._frames)], np.uint8),
+            cv2.IMREAD_COLOR,
+        )
+        self._index += 1
+        return np.ascontiguousarray(
+            cv2.resize(jpeg, out_size, interpolation=cv2.INTER_LINEAR)
+        )
 
 
 def apply_deep_fry(frame_bgr, saturation=2.0, contrast=1.3, shift=10):
@@ -899,12 +874,12 @@ class VideoPipeline(threading.Thread):
         time_loop = TimeLoop()
         magic_loop = MagicLoopBuffer()
         magic_player = None
-        magic_prev_player = None
         magic_on_prev = False
+        # Settling cool-down after activation before any loop is built.
+        magic_settle = max(1, int(cfg["fps"] * MAGIC_LOOP_SETTLE_SECONDS))
+        magic_settle_left = 0
         magic_entry_fade = max(1, int(cfg["fps"] * MAGIC_LOOP_ENTRY_FADE_SECONDS))
         magic_entry_left = 0
-        magic_swap_fade = MAGIC_LOOP_FADE
-        magic_swap_left = 0
 
         while not self._stop_event.is_set():
             try:
@@ -935,29 +910,38 @@ class VideoPipeline(threading.Thread):
                 if magic_on != magic_on_prev:
                     magic_on_prev = magic_on
                     if magic_on:
-                        # A fresh, newly optimized loop is built on every
-                        # activation, never reused from a previous session.
-                        magic_player = magic_loop.build_loop()
-                        magic_prev_player = None
-                        magic_entry_left = (
-                            magic_entry_fade if magic_player is not None else 0
-                        )
-                        magic_swap_left = 0
-                    else:
+                        # Step 1, instant tracking kill: freeze the framing in
+                        # the shared state so the crop window stops moving.
+                        if state["tracking_enabled"]:
+                            self.state.update(tracking_enabled=False)
+                            state["tracking_enabled"] = False
+                        # Step 2, settling grace period: no loop is built or
+                        # played until button-press motion has flushed out of
+                        # the history.
                         magic_player = None
-                        magic_prev_player = None
+                        magic_settle_left = magic_settle
                         magic_entry_left = 0
-                        magic_swap_left = 0
+                    else:
+                        # Resume live capture; tracking control returns via
+                        # the TUI switch.
+                        magic_player = None
+                        magic_settle_left = 0
+                        magic_entry_left = 0
+
                 if magic_on and magic_player is None:
-                    # History still building up; retry until there is enough.
-                    player = magic_loop.build_loop()
-                    if player is not None:
-                        magic_player = player
-                        magic_entry_left = magic_entry_fade
+                    if magic_settle_left > 0:
+                        magic_settle_left -= 1
+                    else:
+                        # Step 3, optimal fragment selection: only after the
+                        # cool-down, pick the calmest, best-matching window.
+                        player = magic_loop.build_loop()
+                        if player is not None:
+                            magic_player = player
+                            magic_entry_left = magic_entry_fade
 
                 # The plain Time Loop replay skips the whole image pipeline,
-                # but Magic Loop keeps it running so its history stays fresh
-                # and each pass can be re-optimized from the newest frames.
+                # but Magic Loop keeps it running (tracking off) so the
+                # history settles with the frozen framing.
                 looping = (
                     bool(state["time_loop_enabled"])
                     and time_loop.ready
@@ -1052,33 +1036,13 @@ class VideoPipeline(threading.Thread):
                     # keeps the AFK history current for loop regeneration.
                     magic_loop.record(out_frame)
 
-                    if magic_on and magic_player is not None:
+                    if magic_player is not None:
+                        # Step 4, seamless continuous playback: the selected
+                        # fragment loops with a clean restart at the head (the
+                        # seam was chosen to match, so no alpha crossfade and
+                        # no ghosting); only the entry dissolves from live.
                         loop_frame = magic_player.next_frame((out_w, out_h))
-                        if magic_player.pass_done:
-                            magic_player.pass_done = False
-                            # A pass finished: pull a fresh, newly optimized
-                            # loop from the newest history, so the freeze is
-                            # never locked into one static buffer slice.
-                            fresh = magic_loop.build_loop()
-                            if fresh is not None:
-                                magic_prev_player = magic_player
-                                magic_player = fresh
-                                magic_swap_left = magic_swap_fade
-                        if magic_swap_left > 0 and magic_prev_player is not None:
-                            # Dissolve the old loop into the fresh one so a
-                            # regeneration is as invisible as the entry.
-                            alpha = 1.0 - magic_swap_left / magic_swap_fade
-                            out_frame = cv2.addWeighted(
-                                magic_prev_player.next_frame((out_w, out_h)),
-                                1.0 - alpha,
-                                loop_frame,
-                                alpha,
-                                0.0,
-                            )
-                            magic_swap_left -= 1
-                        elif magic_entry_left > 0:
-                            # Entry crossfade: dissolve the live picture into
-                            # the loop over ~0.5 s so engaging never pops.
+                        if magic_entry_left > 0:
                             alpha = 1.0 - magic_entry_left / magic_entry_fade
                             out_frame = cv2.addWeighted(
                                 out_frame, 1.0 - alpha, loop_frame, alpha, 0.0

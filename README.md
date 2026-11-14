@@ -69,18 +69,19 @@ loop so you can step away from a call:
   tracking state is restored when Magic Loop is switched off again.
 - The pipeline keeps a rolling ten-second history (300 frames) of the processed
   output, stored JPEG-compressed at reduced size.
-- The history is continuously scanned for the calmest 2-5 second window: each
-  candidate is scored by its internal motion (mean difference between
-  consecutive frames) plus double the difference between its last and first
-  frame (the jump at the splice), so the loop plays a moment where you sit
-  still without gestures or blinks at the cut.
+- Activation follows a fixed sequence: tracking is forced off instantly (the
+  switch dims and locks), then a ~1.75 second settling cool-down runs while
+  the live feed continues - any motion from hitting the key flushes out of
+  the history before anything is looped.
+- Only after settling, the history is scanned for the calmest 2-5 second
+  window: each candidate is scored by its internal motion (mean difference
+  between consecutive frames) plus double the difference between its last and
+  first frame (the jump at the splice), so the loop plays a moment where you
+  sit still without gestures or blinks at the cut.
 - Engaging the mode dissolves from the live picture into the loop over half a
-  second, and the splice itself is hidden by a 12-frame crossfade between the
-  loop tail and head.
-- While Magic Loop is on, the pipeline keeps processing and recording, so
-  every time a loop pass finishes a fresh, newly optimized loop is pulled from
-  the newest ten seconds and dissolved into - the freeze is never locked to
-  one static slice.
+  second. The chosen fragment then replays continuously, restarting cleanly
+  at the head - the seam was picked to match, so there is no crossfade
+  ghosting - until the switch is turned off and live capture resumes.
 
 ## Auto-save
 
