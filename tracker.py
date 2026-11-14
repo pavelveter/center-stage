@@ -1049,6 +1049,14 @@ class VideoPipeline(threading.Thread):
         """Ask the loop to exit; the thread finishes the current frame first."""
         self._stop_event.set()
 
+    def reload_shader(self):
+        """Drop cached shader programs; the next frame recompiles from disk."""
+        engine = self._shader_engine
+        if engine is not None:
+            # dict.clear() is atomic enough in CPython; the video thread only
+            # reads entries and recompiles missing ones.
+            engine._programs.clear()
+
     def run(self):
         """Open the devices, run the frame loop, and always release resources."""
         cfg = self.cfg

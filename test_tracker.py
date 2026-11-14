@@ -752,6 +752,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
             self.state = state
             self.started = False
             self.stopped = False
+            self.reloads = 0
             TestTui.FakePipeline.instances.append(self)
 
         def start(self):
@@ -759,6 +760,9 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
 
         def stop(self):
             self.stopped = True
+
+        def reload_shader(self):
+            self.reloads += 1
 
         def join(self, timeout=None):
             pass
@@ -920,6 +924,43 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 lut = app.query_one("#lut-select", tui.Select)
                 lut.value = tui.Select.NULL
                 await pilot.pause()
+        finally:
+            tracker.VideoPipeline = original
+
+    async def test_reload_rescans_files_and_pipeline(self):
+        import os
+        import tempfile
+
+        import tui
+
+        original = tracker.VideoPipeline
+        tracker.VideoPipeline = self.FakePipeline
+        try:
+            cfg = dict(tracker.DEFAULTS)
+            cfg["lut_file"] = ""
+            app = tui.CenterStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
+            async with app.run_test(size=(100, 45)) as pilot:
+                await pilot.pause()
+                pipeline = app.pipeline
+                # Pretend the folder scan happened before new files appeared.
+                app.shader_files = []
+                app.query_one("#shader-select", tui.Select).set_options([])
+
+                await pilot.press("r")
+                await pilot.pause()
+                # The rescan picked the shaders/ directory back up and the
+                # pipeline was told to drop its compiled shader cache.
+                self.assertTrue(app.shader_files)
+                self.assertGreater(
+                    len(app.query_one("#shader-select", tui.Select)._options), 0
+                )
+                self.assertGreaterEqual(pipeline.reloads, 1)
+                # The cycle keys remain bound but are hidden from the footer.
+                shown = {
+                    b.action: getattr(b, "show", True) for b in app.BINDINGS
+                }
+                self.assertFalse(shown["next_lut"])
+                self.assertFalse(shown["prev_lut"])
         finally:
             tracker.VideoPipeline = original
 

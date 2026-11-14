@@ -167,18 +167,23 @@ class CenterStageApp(App):
     BINDINGS = [
         Binding("q", "shutdown", "Quit", priority=True),
         Binding("t", "toggle_tracking", "Tracking", priority=True),
-        Binding("c", "toggle_lut", "LUT", priority=True),
+        Binding(
+            "c", "toggle_lut", "LUT", key_display="[c]", priority=True
+        ),
         Binding("h", "toggle_shader", "Shader", priority=True),
         Binding("s", "toggle_sharpen", "Sharpen", priority=True),
         Binding("l", "toggle_time_loop", "Loop", priority=True),
         Binding("m", "toggle_magic_loop", "Magic", priority=True),
         Binding("f", "toggle_deep_fry", "Fry", priority=True),
-        Binding("]", "next_lut", "Next LUT", priority=True),
-        Binding("[", "prev_lut", "Prev LUT", priority=True),
+        Binding("r", "reload_files", "Reload", priority=True),
+        # LUT cycling stays bound but is not shown in the footer.
+        Binding("]", "next_lut", show=False, priority=True),
+        Binding("[", "prev_lut", show=False, priority=True),
         # Russian layout equivalents: c/l/m sit on с/д/ь and the bracket keys
         # on ъ/х under the ЙЦУКЕН layout.
         Binding("с", "toggle_lut", show=False, priority=True),
         Binding("р", "toggle_shader", show=False, priority=True),
+        Binding("к", "reload_files", show=False, priority=True),
         Binding("д", "toggle_time_loop", show=False, priority=True),
         Binding("ь", "toggle_magic_loop", show=False, priority=True),
         Binding("ъ", "next_lut", show=False, priority=True),
@@ -432,6 +437,33 @@ class CenterStageApp(App):
 
     def action_toggle_shader(self) -> None:
         self.flip_switch("sw-shader")
+
+    def action_reload_files(self) -> None:
+        """Rescan LUT/shader folders and reload the active files."""
+        values = self.state.snapshot()
+        self.lut_files = tracker.list_lut_files(values["lut_file"])
+        self.shader_files = tracker.list_shader_files(values["shader_file"])
+        lut = self.query_one("#lut-select", Select)
+        lut.set_options([(os.path.basename(p), p) for p in self.lut_files])
+        lut.value = (
+            values["lut_file"]
+            if values["lut_file"] in self.lut_files
+            else Select.NULL
+        )
+        shader = self.query_one("#shader-select", Select)
+        shader.set_options(
+            [(os.path.basename(p), p) for p in self.shader_files]
+        )
+        shader.value = (
+            values["shader_file"]
+            if values["shader_file"] in self.shader_files
+            else Select.NULL
+        )
+        if values["lut_file"]:
+            self.lut_request = values["lut_file"]
+            self.bake_lut(values["lut_file"])
+        self.pipeline.reload_shader()
+        self.set_notice("reloaded LUTs and shaders")
 
     def action_toggle_sharpen(self) -> None:
         self.flip_switch("sw-sharpen")

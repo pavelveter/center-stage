@@ -27,8 +27,9 @@ thread has opened the camera and the virtual-camera backend.
 | `s` | toggle smart sharpening |
 | `l` | toggle the one-second time loop |
 | `m` | toggle Magic Loop (AFK) |
+| `r` | rescan `LUT/` and `shaders/` folders and reload the active files (Russian layout: `к`) |
 | `f` | toggle deep fry / glitch |
-| `]` / `[` | cycle to the next / previous `.cube` LUT (Russian layout: `ъ` / `х`) |
+| `]` / `[` | cycle to the next / previous `.cube` LUT (not shown in the footer; Russian layout: `ъ` / `х`) |
 
 Everything is clickable: switches, the LUT list, the `-`/`+` tuning buttons, and
 the footer key hints. Tuning fields accept a typed value on `Enter`.
