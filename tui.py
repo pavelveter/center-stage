@@ -477,21 +477,21 @@ class CenterStageApp(App):
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """Bake the chosen .cube file, or drop grading on a blank selection."""
+        # A blank selection delivers the Select.NULL sentinel, not "".
+        value = event.value if isinstance(event.value, str) else ""
         if event.select.id == "shader-select":
-            path = event.value
-            if path and path != self.state.snapshot()["shader_file"]:
-                self.state.update(shader_file=path)
-                self.set_notice(f"shader: {os.path.basename(path)}")
+            if value and value != self.state.snapshot()["shader_file"]:
+                self.state.update(shader_file=value)
+                self.set_notice(f"shader: {os.path.basename(value)}")
             return
         if event.select.id != "lut-select":
             return
-        path = event.value
-        if not path or path == self.lut_request:
+        if not value or value == self.lut_request:
             return
-        self.lut_request = path
-        self.state.update(lut_file=path)
-        self.set_notice(f"loading {os.path.basename(path)}")
-        self.bake_lut(path)
+        self.lut_request = value
+        self.state.update(lut_file=value)
+        self.set_notice(f"loading {os.path.basename(value)}")
+        self.bake_lut(value)
 
     @work(thread=True, exclusive=True, group="lut")
     def bake_lut(self, path: str) -> None:

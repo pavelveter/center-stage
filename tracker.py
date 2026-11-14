@@ -869,13 +869,15 @@ void main() {
 
 # The user file provides mainImage(out vec4 fragColor, in vec2 fragCoord),
 # Shadertoy style; this wrapper supplies the entry point, the input texture
-# (texture0, holding the BGR frame), and iResolution. The frame data and the
-# rendered result are both BGR, so shaders that preserve channel order (all
-# the brightness/pattern effects this is for) need no reordering.
+# (texture0, holding the BGR frame), and the iResolution/iTime uniforms. The
+# frame data and the rendered result are both BGR, so shaders that preserve
+# channel order (all the brightness/pattern effects this is for) need no
+# reordering.
 SHADER_FRAGMENT_TEMPLATE = """
 #version 330
 uniform sampler2D texture0;
 uniform vec2 iResolution;
+uniform float iTime;
 #define iChannel0 texture0
 {user_source}
 out vec4 out_Color;
@@ -942,6 +944,7 @@ class ShaderEngine:
         self._fbo = None
         self._texture = None
         self._size = (0, 0)
+        self._start = time.monotonic()
         # path -> (program, quad VAO) or None (broken/unusable)
         self._programs = {}
         self._broken = set()
@@ -1005,6 +1008,10 @@ class ShaderEngine:
         self._texture.use(0)
         program["texture0"].value = 0
         program["iResolution"].value = (float(width), float(height))
+        if "iTime" in program:
+            # Seconds since the engine started; shader effects use it as
+            # their animation clock (monotonic, no wall-clock jumps).
+            program["iTime"].value = time.monotonic() - self._start
         self._fbo.use()
         quad.render(moderngl.TRIANGLE_STRIP)
         data = self._fbo.read(components=3, alignment=1)

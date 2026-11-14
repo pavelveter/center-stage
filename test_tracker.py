@@ -439,6 +439,35 @@ class TestShaderEngine(unittest.TestCase):
         # The marked region is inverted (255 - value, small tolerance).
         self.assertTrue(abs(int(out[15, 25, 0]) - (255 - 30)) <= 2)
 
+    def test_shader_using_itime_compiles_and_runs(self):
+        """iTime must be provided, or Shadertoy noise shaders never compile."""
+        import numpy as np
+
+        source = """
+        void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+            float n = fract(sin(dot(fragCoord.xy, vec2(17.0, 180.0))) + iTime);
+            fragColor = vec4(mix(
+                texture(iChannel0, fragCoord.xy / iResolution.xy).rgb,
+                vec3(n), 0.5), 1.0);
+        }
+        """
+        engine = tracker.ShaderEngine()
+        frame = np.full((60, 80, 3), 100, dtype=np.uint8)
+        try:
+            import tempfile
+
+            with tempfile.TemporaryDirectory() as folder:
+                path = self._write(folder, "itime.glsl", source)
+                out = engine.apply(frame, path)
+        except Exception:
+            self.skipTest("no usable GPU context in this environment")
+        finally:
+            if engine._ctx is not None:
+                engine._ctx.release()
+        # Not blacklisted as broken and not passed through unchanged.
+        self.assertNotIn(path, engine._broken)
+        self.assertFalse((out == frame).all())
+
 
 class TestLutDiscovery(unittest.TestCase):
     def test_scans_working_directory_and_lut_folder(self):
@@ -879,6 +908,18 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     app.state.snapshot()["shader_file"], app.shader_files[0]
                 )
+
+                # The blank option is a NoSelection sentinel, not a string;
+                # choosing it must not crash the app.
+                select.value = tui.Select.NULL
+                await pilot.pause()
+                self.assertEqual(
+                    app.state.snapshot()["shader_file"], app.shader_files[0]
+                )
+                # Same for the LUT dropdown's blank option.
+                lut = app.query_one("#lut-select", tui.Select)
+                lut.value = tui.Select.NULL
+                await pilot.pause()
         finally:
             tracker.VideoPipeline = original
 
