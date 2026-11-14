@@ -20,15 +20,15 @@ thread has opened the camera and the virtual-camera backend.
 
 | Key | Action |
 | --- | --- |
-| `q` | quit (settings are saved first) |
-| `t` | toggle face tracking |
-| `c` | toggle LUT color grading |
-| `h` | toggle GLSL shader processing |
-| `s` | toggle smart sharpening |
-| `l` | toggle the one-second time loop |
-| `m` | toggle Magic Loop (AFK) |
+| `q` | quit (settings are saved first; Russian layout: `й`) |
+| `t` | toggle face tracking (Russian layout: `е`) |
+| `c` | toggle LUT color grading (Russian layout: `с`) |
+| `h` | toggle GLSL shader processing (Russian layout: `р`) |
+| `s` | toggle smart sharpening (Russian layout: `ы`) |
+| `l` | toggle the one-second time loop (Russian layout: `д`) |
+| `m` | toggle Magic Loop (AFK) (Russian layout: `ь`) |
 | `r` | rescan `LUT/` and `shaders/` folders and reload the active files (Russian layout: `к`) |
-| `f` | toggle deep fry / glitch |
+| `f` | toggle deep fry / glitch (Russian layout: `а`) |
 | `]` / `[` | cycle to the next / previous `.cube` LUT (not shown in the footer; Russian layout: `ъ` / `х`) |
 | `>` / `<` | cycle to the next / previous `.glsl` shader (not shown in the footer; Russian layout: `ю` / `б`) |
 

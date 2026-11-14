@@ -194,6 +194,11 @@ class HyperStageApp(App):
         Binding("х", "prev_lut", show=False, priority=True),
         Binding("ю", "next_shader", show=False, priority=True),
         Binding("б", "prev_shader", show=False, priority=True),
+        # The rest of the hotkeys: q/t/s/f sit on й/е/ы/а under ЙЦУКЕН.
+        Binding("й", "shutdown", show=False, priority=True),
+        Binding("е", "toggle_tracking", show=False, priority=True),
+        Binding("ы", "toggle_sharpen", show=False, priority=True),
+        Binding("а", "toggle_deep_fry", show=False, priority=True),
     ]
 
     def __init__(self, cfg, config_path, preview=False):

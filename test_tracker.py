@@ -1716,6 +1716,50 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
         finally:
             tracker.VideoPipeline = original
 
+    async def test_russian_layout_equivalents_cover_all_hotkeys(self):
+        """Every Latin hotkey fires through its ЙЦУКЕН equivalent key."""
+        import os
+        import tempfile
+
+        import tui
+
+        original = tracker.VideoPipeline
+        tracker.VideoPipeline = self.FakePipeline
+        try:
+            cfg = dict(tracker.DEFAULTS)
+            app = tui.HyperStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
+            async with app.run_test(size=(100, 45)) as pilot:
+                await pilot.pause(0.1)
+                cases = [
+                    ("е", "sw-tracking", False),     # t: tracking off
+                    ("ы", "sw-sharpen", True),       # s: sharpen on
+                    ("а", "sw-fry", True),           # f: deep fry on
+                ]
+                for key, switch_id, expected in cases:
+                    await pilot.press(key)
+                    await pilot.pause(0.3)
+                    self.assertTrue(
+                        app.query_one(f"#{switch_id}", tui.Switch).value
+                        is expected,
+                        f"{key} did not toggle {switch_id}",
+                    )
+                # Every Latin binding has a Russian counterpart registered.
+                latin = {
+                    b.action for b in tui.HyperStageApp.BINDINGS
+                    if b.key.isascii()
+                }
+                russian = {
+                    b.action for b in tui.HyperStageApp.BINDINGS
+                    if not b.key.isascii()
+                }
+                self.assertEqual(latin, russian)
+                # q equivalent actually shuts the app down (tested last).
+                await pilot.press("й")
+                await pilot.pause(0.3)
+                self.assertFalse(app.is_running)
+        finally:
+            tracker.VideoPipeline = original
+
     async def test_bracket_keys_cycle_luts(self):
         import os
         import tempfile
