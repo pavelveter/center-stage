@@ -876,9 +876,11 @@ void main() {
 SHADER_FRAGMENT_TEMPLATE = """
 #version 330
 uniform sampler2D texture0;
+uniform sampler2D texture1;
 uniform vec2 iResolution;
 uniform float iTime;
 #define iChannel0 texture0
+#define iChannel1 texture1
 {user_source}
 out vec4 out_Color;
 void main() {{
@@ -890,11 +892,12 @@ void main() {{
 
 
 def list_shader_files(primary_path):
-    """Return sorted, de-duplicated .glsl files usable as shader choices.
+    """Return sorted, de-duplicated shader entries usable as TUI choices.
 
     Mirrors list_lut_files: looks next to the configured shader, in the
-    current directory, and in shaders/, so files dropped in either
-    conventional place show up in the TUI list.
+    current directory, and in shaders/. Entries are single .glsl files or
+    multibuffer pack folders named <name>.glsl (Shadertoy exports with
+    Common/Buffer/Image passes).
     """
     folders = []
     if primary_path:
@@ -926,6 +929,178 @@ def load_shader(path):
     return source
 
 
+class MultiShader:
+    """A Shadertoy multibuffer export: a <name>.glsl folder of passes.
+
+    The export format stores pass wiring outside the files, so this uses a
+    fixed convention that covers the standard layout (Common.glsl, Buffer
+    A/B/... .glsl, Image.glsl): Common is prepended to every pass, buffers
+    run in file-name order, the first buffer's iChannel0 is the camera frame
+    and each following pass reads the previous pass output, every buffer's
+    iChannel1 is its own previous frame (ping-pong feedback, so temporal
+    denoising like Lucas-Kanade's Buffer A works), and Image.glsl reads the
+    last buffer to produce the visible frame.
+
+    Unlike single-file shaders (BGR in/out, matching the camera), a pack is
+    a verbatim Shadertoy import, so the camera frame is converted to RGB
+    before the first pass and the final render back to BGR.
+    """
+
+    def __init__(self, ctx, quad_buffer, folder, start):
+        self._ctx = ctx
+        self._folder = folder
+        self._start = start
+        self._buffer = quad_buffer
+        self._camera = None
+        # Per buffer pass: [ping texture, pong texture] and matching FBOs;
+        # rendering goes to the front entry, which then rotates to the back
+        # so the next frame reads it as feedback.
+        self._textures = []
+        self._fbos = []
+        self._passes = []  # (program, quad VAO) per buffer pass
+        self._final = None  # (program, quad VAO) for Image.glsl
+        self._size = (0, 0)
+
+    def close(self):
+        """Release everything, including the compiled pass programs."""
+        self._release_targets()
+        for program, quad in [self._final, *self._passes]:
+            if quad is not None:
+                quad.release()
+            program.release()
+        self._passes = []
+        self._final = None
+        self._size = (0, 0)
+
+    def _release_targets(self):
+        """Release render targets; programs and quads stay usable."""
+        for texs in self._textures:
+            for tex in texs:
+                tex.release()
+        for fbos in self._fbos:
+            for fbo in fbos:
+                fbo.release()
+        self._textures = []
+        self._fbos = []
+        if self._camera is not None:
+            self._camera.release()
+            self._camera = None
+
+    def _compile(self, source):
+        program = self._ctx.program(
+            vertex_shader=SHADER_VERTEX_SOURCE,
+            fragment_shader=SHADER_FRAGMENT_TEMPLATE.format(user_source=source),
+        )
+        # The quad VAO must belong to the program it renders with.
+        quad = self._ctx.vertex_array(program, [(self._buffer, "2f", "in_pos")])
+        return program, quad
+
+    def _set_clock(self, program):
+        program["texture0"].value = 0
+        if "texture1" in program:
+            program["texture1"].value = 1
+        program["iResolution"].value = (
+            float(self._size[0]),
+            float(self._size[1]),
+        )
+        if "iTime" in program:
+            program["iTime"].value = time.monotonic() - self._start
+
+    def build(self):
+        """Compile every pass; None (after a warning) on any failure."""
+        try:
+            names = sorted(os.listdir(self._folder))
+        except OSError as exc:
+            print(f"warning: shader pack {self._folder} unreadable: {exc}")
+            return None
+        names = [n for n in names if n.endswith(".glsl")]
+        common = ""
+        if "Common.glsl" in names:
+            with open(os.path.join(self._folder, "Common.glsl")) as f:
+                common = f.read() + "\n"
+        buffers = [n for n in names if n not in ("Common.glsl", "Image.glsl")]
+        if "Image.glsl" not in names or not buffers:
+            print(
+                f"warning: shader pack {self._folder} needs buffer passes "
+                "and Image.glsl"
+            )
+            return None
+        try:
+            for name in buffers:
+                with open(os.path.join(self._folder, name)) as f:
+                    self._passes.append(self._compile(common + f.read()))
+            with open(os.path.join(self._folder, "Image.glsl")) as f:
+                self._final = self._compile(common + f.read())
+        except Exception as exc:
+            print(f"warning: shader pack {self._folder} failed: {exc}")
+            self.close()
+            return None
+        return self
+
+    def _ensure_size(self, width, height):
+        if self._size == (width, height):
+            return True
+        self._release_targets()
+        try:
+            self._camera = self._ctx.texture((width, height), 3, dtype="f1")
+            for _ in self._passes:
+                # Two ping-pong targets per buffer: the framebuffer wraps the
+                # texture, so what is rendered is exactly what the next pass
+                # (and the next frame's feedback) samples. Buffers are float
+                # (RGBA16F) like Shadertoy's, so passes can store negative or
+                # fractional data (Lucas-Kanade's motion vectors) between
+                # passes and frames.
+                texs = [
+                    self._ctx.texture((width, height), 4, dtype="f2")
+                    for _ in range(2)
+                ]
+                for tex in texs:
+                    tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+                    tex.repeat_x = False
+                    tex.repeat_y = False
+                self._textures.append(texs)
+                self._fbos.append([self._ctx.framebuffer(tex) for tex in texs])
+        except Exception as exc:
+            print(f"warning: shader pack {self._folder} size error: {exc}")
+            self._release_targets()
+            return False
+        self._size = (width, height)
+        return True
+
+    def run(self, output_fbo, frame_bgr):
+        """Process one BGR camera frame through the pass chain."""
+        height, width = frame_bgr.shape[:2]
+        if not self._ensure_size(width, height):
+            return frame_bgr
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        self._camera.write(rgb)
+        source = self._camera
+        for i, (program, quad) in enumerate(self._passes):
+            textures = self._textures[i]
+            fbos = self._fbos[i]
+            source.use(0)
+            textures[1].use(1)  # this buffer's previous frame
+            self._set_clock(program)
+            fbos[0].use()
+            quad.render(moderngl.TRIANGLE_STRIP)
+            source = textures[0]
+            # Rotate so the just-written texture becomes next frame's
+            # feedback and the old feedback becomes the render target.
+            textures.append(textures.pop(0))
+            fbos.append(fbos.pop(0))
+        program, quad = self._final
+        source.use(0)
+        self._set_clock(program)
+        output_fbo.use()
+        quad.render(moderngl.TRIANGLE_STRIP)
+        data = output_fbo.read(components=3, alignment=1)
+        # read() returns rows bottom-up like the render, so the row order
+        # already matches the camera frame.
+        rgb_out = np.frombuffer(data, dtype=np.uint8).reshape(height, width, 3)
+        return cv2.cvtColor(rgb_out, cv2.COLOR_RGB2BGR)
+
+
+
 class ShaderEngine:
     """Compiles and runs the active .glsl shader on the GPU.
 
@@ -933,7 +1108,8 @@ class ShaderEngine:
     is created lazily on first use, keeping GL affinity in one place. Programs
     are cached per file so switching shaders or re-selecting the same file
     never recompiles; a shader that fails to compile disables the effect
-    (the live frame passes through) with a single warning.
+    (the live frame passes through) with a single warning. A multibuffer
+    pack (a <name>.glsl folder) is compiled into a MultiShader instead.
     """
 
     VERTEX = SHADER_VERTEX_SOURCE
@@ -945,7 +1121,7 @@ class ShaderEngine:
         self._texture = None
         self._size = (0, 0)
         self._start = time.monotonic()
-        # path -> (program, quad VAO) or None (broken/unusable)
+        # path -> (program, quad VAO) / MultiShader, or None (broken)
         self._programs = {}
         self._broken = set()
 
@@ -976,6 +1152,8 @@ class ShaderEngine:
         height, width = frame_bgr.shape[:2]
         if not self._ensure_size(width, height):
             return frame_bgr
+        if os.path.isdir(path):
+            return self._apply_multi(frame_bgr, path)
         entry = self._programs.get(path, False)
         if entry is False:
             source = load_shader(path)
@@ -1007,6 +1185,10 @@ class ShaderEngine:
         self._texture.write(frame_bgr)
         self._texture.use(0)
         program["texture0"].value = 0
+        if "texture1" in program:
+            # Unused by single-file shaders; an unbound unit reads black,
+            # matching Shadertoy's empty channel.
+            program["texture1"].value = 1
         program["iResolution"].value = (float(width), float(height))
         if "iTime" in program:
             # Seconds since the engine started; shader effects use it as
@@ -1018,6 +1200,20 @@ class ShaderEngine:
         # The GL render is bottom-up but read() returns rows bottom-up as
         # well, so the data is already in the camera frame's top-down order.
         return np.frombuffer(data, dtype=np.uint8).reshape(height, width, 3)
+
+    def _apply_multi(self, frame_bgr, path):
+        """Run a multibuffer pack folder; input frame passes through if broken."""
+        entry = self._programs.get(path, False)
+        if entry is False:
+            entry = MultiShader(
+                self._ctx, self._buffer, path, self._start
+            ).build()
+            if entry is None:
+                self._broken.add(path)
+            self._programs[path] = entry
+        if entry is None:
+            return frame_bgr
+        return entry.run(self._fbo, frame_bgr)
 
 
 def build_lut_table(path):
@@ -1054,7 +1250,11 @@ class VideoPipeline(threading.Thread):
         engine = self._shader_engine
         if engine is not None:
             # dict.clear() is atomic enough in CPython; the video thread only
-            # reads entries and recompiles missing ones.
+            # reads entries and recompiles missing ones. Multibuffer packs
+            # release their GL objects explicitly.
+            for entry in engine._programs.values():
+                if isinstance(entry, MultiShader):
+                    entry.close()
             engine._programs.clear()
 
     def run(self):

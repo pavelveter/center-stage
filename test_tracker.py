@@ -468,6 +468,99 @@ class TestShaderEngine(unittest.TestCase):
         self.assertNotIn(path, engine._broken)
         self.assertFalse((out == frame).all())
 
+    def test_multibuffer_pack_runs_passes_with_feedback(self):
+        """A <name>.glsl folder runs Common + buffers + Image as one pack."""
+        import os
+        import tempfile
+
+        import numpy as np
+
+        pack_dir = None
+        engine = tracker.ShaderEngine()
+        frame = np.zeros((60, 80, 3), dtype=np.uint8)
+        frame[..., 0] = 200  # BGR blue
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                os.makedirs(os.path.join(folder, "pack.glsl"))
+                old_cwd = os.getcwd()
+                os.chdir(folder)
+                try:
+                    # Discovered alongside single files.
+                    found = tracker.list_shader_files(None)
+                    self.assertIn(
+                        os.path.realpath(os.path.join(folder, "pack.glsl")),
+                        [os.path.realpath(p) for p in found],
+                    )
+                finally:
+                    os.chdir(old_cwd)
+                pack_dir = os.path.join(folder, "pack.glsl")
+                passes = {
+                    "Common.glsl": "vec3 chain(vec3 c) { return c; }\n",
+                    "Buffer A.glsl": (
+                        "void mainImage(out vec4 c, in vec2 p) {\n"
+                        "    vec2 uv = p / iResolution.xy;\n"
+                        "    vec4 cam = texture(iChannel0, uv);\n"
+                        "    c = min(texture(iChannel1, uv) + 0.25, cam);\n"
+                        "}\n"
+                    ),
+                    "Buffer B.glsl": (
+                        "void mainImage(out vec4 c, in vec2 p) {\n"
+                        "    vec2 uv = p / iResolution.xy;\n"
+                        "    c = vec4(chain(texture(iChannel0, uv).rgb), 1.0);\n"
+                        "}\n"
+                    ),
+                    "Image.glsl": (
+                        "void mainImage(out vec4 c, in vec2 p) {\n"
+                        "    vec2 uv = p / iResolution.xy;\n"
+                        "    c = vec4(vec3(1.0)\n"
+                        "        - texture(iChannel0, uv).rgb, 1.0);\n"
+                        "}\n"
+                    ),
+                }
+                for name, source in passes.items():
+                    with open(os.path.join(pack_dir, name), "w") as f:
+                        f.write(source)
+                out1 = engine.apply(frame, pack_dir)
+                out2 = engine.apply(frame, pack_dir)
+        except Exception:
+            self.skipTest("no usable GPU context in this environment")
+        finally:
+            if engine._ctx is not None and pack_dir in engine._programs:
+                engine._programs[pack_dir].close()
+            if engine._ctx is not None:
+                engine._ctx.release()
+        self.assertNotIn(pack_dir, engine._broken)
+        # Pass order, feedback, and the RGB round trip: frame 1 Buffer A
+        # accumulates 0.25 toward the camera's blue (0.784 in RGB), frame 2
+        # reaches 0.5; Image inverts and the engine converts back to BGR.
+        self.assertAlmostEqual(int(out1[5, 5, 0]), 255 - 64, delta=3)
+        self.assertAlmostEqual(int(out2[5, 5, 0]), 255 - 128, delta=3)
+        self.assertEqual(int(out1[5, 5, 1]), 255)
+        self.assertEqual(int(out1[5, 5, 2]), 255)
+
+    def test_multibuffer_pack_with_bad_passes_disables_cleanly(self):
+        import os
+        import tempfile
+
+        import numpy as np
+
+        frame = np.zeros((30, 40, 3), dtype=np.uint8)
+        with tempfile.TemporaryDirectory() as folder:
+            pack_dir = os.path.join(folder, "pack.glsl")
+            os.makedirs(pack_dir)
+            with open(os.path.join(pack_dir, "Buffer A.glsl"), "w") as f:
+                f.write("void mainImage(out vec4 c, in vec2 p) { c = vec4(0); }")
+            # No Image.glsl: unusable, frame passes through.
+            engine = tracker.ShaderEngine()
+            try:
+                out = engine.apply(frame, pack_dir)
+            except Exception:
+                self.skipTest("no usable GPU context in this environment")
+            finally:
+                engine._ctx.release()
+            self.assertTrue((out == frame).all())
+            self.assertIn(pack_dir, engine._broken)
+
 
 class TestLutDiscovery(unittest.TestCase):
     def test_scans_working_directory_and_lut_folder(self):

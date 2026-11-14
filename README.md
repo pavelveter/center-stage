@@ -66,9 +66,20 @@ Picking a `.glsl` file runs it on the GPU in real time via a headless
 `moderngl` context that lives inside the video thread. Shaders are
 Shadertoy-style: they define `void mainImage(out vec4 fragColor, in vec2
 fragCoord)`, read the current BGR frame from the `texture0` sampler (also
-aliased as `iChannel0`) sized by the `iResolution` uniform, and output
-processed BGR pixels. A shader that fails to compile is reported once and
-the frame passes through unchanged.
+aliased as `iChannel0`) sized by the `iResolution` uniform, with `iTime` as
+the animation clock, and output processed BGR pixels. A shader that fails to
+compile is reported once and the frame passes through unchanged.
+
+Shadertoy multibuffer exports are supported too: a folder named
+`<name>.glsl/` holding `Common.glsl`, `Buffer A.glsl`, ..., `Image.glsl`
+appears as one shader entry. `Common` is prepended to every pass, buffers
+run in file-name order (the first buffer reads the camera on `iChannel0`,
+each following pass reads the previous pass output, every buffer's
+`iChannel1` is its own previous frame), and `Image.glsl` produces the
+visible frame. Buffer targets are float (RGBA16F) like Shadertoy's, so
+passes can carry negative/fractional data (e.g. the Lucas-Kanade optical
+flow pack), and the camera frame is converted to RGB for the pack, matching
+Shadertoy's channel order.
 
 Disabling face tracking eases the view back to the base zoom, centered at
 `0.5, 0.45`, using the same spring/EMA smoothing as tracking.
