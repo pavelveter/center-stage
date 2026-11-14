@@ -51,7 +51,7 @@ The screen is a single centered column (max 72 columns wide) with two blocks:
     sharpening is off.
   - *Time Loop (1s)* - replays a 30-frame ring buffer as a seamless loop.
   - *Magic Loop (AFK)* - freezes the stream into a seamless loop of the last
-    ten seconds of video, for stepping away from a call (see below).
+    ten seconds of video and locks tracking while it is on (see below).
   - *Deep Fry / Glitch* - boosted saturation/contrast with an RGB channel roll.
 
 Picking a `.cube` file in the dropdown bakes its 128^3 lookup table in a
@@ -65,14 +65,18 @@ Disabling face tracking eases the view back to the base zoom, centered at
 Turning on *Magic Loop* (key `g`) freezes the published video into a seamless
 loop so you can step away from a call:
 
+- Face tracking is forced off (its switch dims and locks) and the previous
+  tracking state is restored when Magic Loop is switched off again.
 - The pipeline keeps a rolling ten-second history (300 frames) of the processed
   output, stored JPEG-compressed at reduced size.
-- On activation the current framing locks (tracking and zoom stop updating),
-  the history is searched for the wrap point whose frame differs least from
-  the loop start (mean absolute difference of tiny grayscale thumbnails), and
-  the segment is cut there.
-- The splice is hidden by a 12-frame crossfade between the loop tail and head,
-  and the loop replays continuously until the switch is turned off.
+- On activation the history is scanned for the calmest 2-5 second window: each
+  candidate is scored by its internal motion (mean difference between
+  consecutive frames) plus how well its last frame matches its first (the jump
+  at the splice), so the loop plays a moment where you sit still without
+  gestures or blinks at the cut.
+- Engaging the mode dissolves from the live picture into the loop over half a
+  second, and the splice itself is hidden by a 12-frame crossfade between the
+  loop tail and head; the loop then replays until the switch is turned off.
 
 ## Auto-save
 

@@ -175,6 +175,8 @@ class CenterStageApp(App):
         self.pipeline = tracker.VideoPipeline(cfg, self.state, preview=preview)
         self.lut_files = tracker.list_lut_files(cfg["lut_file"])
         self.lut_request = ""
+        # Tracking state to restore when Magic Loop turns off again.
+        self._tracking_before_magic = None
 
     def tuner_controls(self, suffix, values, name=None):
         """Yield an optional mini-label plus the minus/input/plus controls."""
@@ -207,6 +209,10 @@ class CenterStageApp(App):
 
     def compose(self) -> ComposeResult:
         values = self.state.snapshot()
+        if values["magic_loop_enabled"]:
+            # The tracking switch renders off immediately; on_mount forces the
+            # shared state to match.
+            values = {**values, "tracking_enabled": False}
         current = os.path.abspath(values["lut_file"] or "")
         selected = current if current in self.lut_files else Select.NULL
         yield Header()
@@ -250,6 +256,10 @@ class CenterStageApp(App):
         self.set_interval(TELEMETRY_SECONDS, self.refresh_telemetry)
         self.set_interval(AUTOSAVE_SECONDS, self.autosave)
         self.sync_dependent_controls()
+        if self.state.snapshot()["magic_loop_enabled"]:
+            # Started with --magic-loop: force tracking off and dim its
+            # switch so the UI matches the pipeline from the first frame.
+            self.sync_magic_tracking(True)
         self.refresh_telemetry()
         current = self.state.snapshot()["lut_file"]
         if current:
@@ -336,9 +346,36 @@ class CenterStageApp(App):
         if spec is None:
             return
         label, key = spec
+        if key == "magic_loop_enabled":
+            self.sync_magic_tracking(event.switch.value)
         self.state.update(**{key: event.switch.value})
         self.sync_dependent_controls()
         self.set_notice(f"{label}: {'on' if event.switch.value else 'off'}")
+
+    def sync_magic_tracking(self, magic_on: bool) -> None:
+        """Mirror Magic Loop in the Face Tracking switch and shared state.
+
+        Magic Loop freezes the framing, so tracking is forced off and its
+        switch dims; turning Magic Loop off restores the previous tracking
+        state so the UI always reflects what the pipeline actually does.
+        """
+        switch = self.query_one("#sw-tracking", Switch)
+        if magic_on:
+            if self._tracking_before_magic is None:
+                self._tracking_before_magic = bool(
+                    self.state.snapshot()["tracking_enabled"]
+                )
+            self.state.update(tracking_enabled=False)
+            switch.value = False
+            switch.disabled = True
+        else:
+            previous = self._tracking_before_magic
+            self._tracking_before_magic = None
+            switch.disabled = False
+            if previous is not None:
+                # Setting the same value fires no Changed message.
+                switch.value = previous
+            self.state.update(tracking_enabled=bool(switch.value))
 
     def flip_switch(self, widget_id: str) -> None:
         """Toggle a switch; its Changed message updates the shared state."""
@@ -346,6 +383,9 @@ class CenterStageApp(App):
         switch.value = not switch.value
 
     def action_toggle_tracking(self) -> None:
+        if self.state.snapshot()["magic_loop_enabled"]:
+            self.set_notice("tracking is frozen while Magic Loop is on")
+            return
         self.flip_switch("sw-tracking")
 
     def action_toggle_lut(self) -> None:

@@ -249,20 +249,39 @@ class TestMagicLoop(unittest.TestCase):
         buf.record(frame)
         self.assertIsNone(buf.build_loop())
 
-    def test_seam_search_picks_the_matching_frame(self):
+    def test_seam_search_picks_the_calmest_window(self):
+        import cv2
         import numpy as np
 
         buf = tracker.MagicLoopBuffer()
-        base = np.full((180, 320, 3), 40, dtype=np.uint8)
-        for i in range(tracker.MAGIC_LOOP_MIN_FRAMES + 5):
-            frame = base.copy()
-            frame[:, : i + 1] = 200  # a bar grows until the loop point
-            if i == 47:
-                frame = base.copy()  # identical to the first frame
+        still = np.full((180, 320, 3), 40, dtype=np.uint8)
+        for i in range(tracker.MAGIC_LOOP_MIN_FRAMES + 30):
+            if i < 60:
+                frame = still.copy()
+                # Busy motion early on: a bar jumps around every frame.
+                frame[:, : ((i * 11) % 6) * 50 + 10] = 200
+            else:
+                frame = still  # dead still afterwards
             buf.record(frame)
         player = buf.build_loop()
         self.assertIsNotNone(player)
-        self.assertEqual(len(player._frames), 48)
+        # The loop is a full minimum-length window taken entirely from the
+        # still zone, not from the moving part of the history.
+        self.assertEqual(len(player._frames), tracker.MAGIC_LOOP_MIN_LOOP_FRAMES)
+        first = cv2.imdecode(
+            np.frombuffer(player._frames[0], np.uint8), cv2.IMREAD_COLOR
+        )
+        self.assertLess(int(first.max()), 100)
+
+    def test_loop_rejects_a_window_shorter_than_two_seconds(self):
+        import numpy as np
+
+        buf = tracker.MagicLoopBuffer()
+        still = np.full((180, 320, 3), 40, dtype=np.uint8)
+        # Just under MAGIC_LOOP_MIN_FRAMES: a full calm window cannot exist.
+        for _ in range(tracker.MAGIC_LOOP_MIN_FRAMES - 1):
+            buf.record(still)
+        self.assertIsNone(buf.build_loop())
 
     def test_player_crossfades_and_wraps(self):
         import cv2
@@ -638,6 +657,72 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
 
                 app.autosave()
                 self.assertEqual(tracker.load_config(path)["zoom"], 2.5)
+        finally:
+            tracker.VideoPipeline = original
+
+    async def test_magic_loop_syncs_the_tracking_switch(self):
+        import os
+        import tempfile
+
+        import tui
+
+        original = tracker.VideoPipeline
+        tracker.VideoPipeline = self.FakePipeline
+        try:
+            cfg = dict(tracker.DEFAULTS)
+            cfg["lut_file"] = ""
+            app = tui.CenterStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
+            async with app.run_test(size=(100, 45)) as pilot:
+                await pilot.pause()
+                tracking = app.query_one("#sw-tracking", tui.Switch)
+                self.assertTrue(tracking.value)
+
+                await pilot.press("g")
+                await pilot.pause()
+                # Magic on: tracking forced off, switch dimmed and locked.
+                state = app.state.snapshot()
+                self.assertTrue(state["magic_loop_enabled"])
+                self.assertFalse(state["tracking_enabled"])
+                self.assertFalse(tracking.value)
+                self.assertTrue(tracking.disabled)
+
+                await pilot.press("g")
+                await pilot.pause()
+                # Magic off: the previous tracking state comes back.
+                state = app.state.snapshot()
+                self.assertFalse(state["magic_loop_enabled"])
+                self.assertTrue(state["tracking_enabled"])
+                self.assertTrue(tracking.value)
+                self.assertFalse(tracking.disabled)
+        finally:
+            tracker.VideoPipeline = original
+
+    async def test_magic_loop_at_startup_forces_tracking_off(self):
+        import os
+        import tempfile
+
+        import tui
+
+        original = tracker.VideoPipeline
+        tracker.VideoPipeline = self.FakePipeline
+        try:
+            cfg = dict(tracker.DEFAULTS)
+            cfg["lut_file"] = ""
+            cfg["magic_loop_enabled"] = True
+            app = tui.CenterStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
+            async with app.run_test(size=(100, 45)) as pilot:
+                await pilot.pause()
+                tracking = app.query_one("#sw-tracking", tui.Switch)
+                self.assertFalse(app.state.snapshot()["tracking_enabled"])
+                self.assertFalse(tracking.value)
+                self.assertTrue(tracking.disabled)
+
+                await pilot.press("g")
+                await pilot.pause()
+                # Turning Magic Loop off restores the configured behavior.
+                self.assertTrue(app.state.snapshot()["tracking_enabled"])
+                self.assertTrue(tracking.value)
+                self.assertFalse(tracking.disabled)
         finally:
             tracker.VideoPipeline = original
 
