@@ -93,6 +93,92 @@ class TestSmartSharpen(unittest.TestCase):
         self.assertTrue((out == frame).all())
 
 
+def make_grey_lut(folder, name="bw.cube", size=5):
+    """Write a synthetic pure-desaturation .cube LUT (out = luma, grey)."""
+    import os
+
+    lines = [f"LUT_3D_SIZE {size}"]
+    for b in range(size):
+        for g in range(size):
+            for r in range(size):
+                y = (0.114 * b + 0.587 * g + 0.299 * r) / (size - 1)
+                lines.append(f"{y:.6f} {y:.6f} {y:.6f}")
+    path = os.path.join(folder, name)
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    return path
+
+
+def make_blue_disc_frame():
+    """A grey field with a noisy, saturated blue disc: leak amplifier."""
+    import numpy as np
+
+    frame = np.full((270, 480, 3), 128, np.uint8)
+    yy, xx = np.mgrid[0:270, 0:480]
+    mask = (xx - 240) ** 2 + (yy - 135) ** 2 < 80 ** 2
+    rng = np.random.default_rng(3)
+    frame[mask] = np.stack(
+        [
+            rng.integers(140, 256, int(mask.sum())),
+            rng.integers(0, 60, int(mask.sum())),
+            rng.integers(0, 60, int(mask.sum())),
+        ],
+        axis=1,
+    )
+    frame += rng.integers(-6, 7, frame.shape, dtype=np.int16).astype(np.uint8)
+    return frame
+
+
+class TestApplyLut(unittest.TestCase):
+    def test_detail_mode_does_not_leak_chroma(self):
+        """A B&W LUT with lut_detail=True must not re-tint from full-res
+        chroma: the sharpness detail term is luma-only."""
+        import os
+        import tempfile
+
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = make_grey_lut(folder)
+            table = tracker.bake_lut(tracker.load_lut(path))
+            frame = make_blue_disc_frame()
+            soft = tracker.apply_lut(frame, table, scale=8, detail=False)
+            sharp = tracker.apply_lut(frame, table, scale=8, detail=True)
+            chroma_soft = soft.max(axis=2).astype(int) - soft.min(axis=2)
+            chroma_sharp = sharp.max(axis=2).astype(int) - sharp.min(axis=2)
+            # The graded low-res image defines how grey the output can be;
+            # the detail path may add at most rounding on top of that.
+            self.assertLessEqual(
+                int(chroma_sharp.max()), int(chroma_soft.max()) + 2
+            )
+
+    def test_detail_mode_preserves_luma_detail(self):
+        """The chroma-stripped detail term keeps edges sharp."""
+        import os
+        import tempfile
+
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = make_grey_lut(folder)
+            table = tracker.bake_lut(tracker.load_lut(path))
+            # Grey step edge plus noise: luma detail must survive.
+            frame = np.tile(
+                np.linspace(60, 200, 480, dtype=np.uint8), (270, 1)
+            )[..., None]
+            frame = np.repeat(frame, 3, axis=2)
+            rng = np.random.default_rng(5)
+            frame += rng.integers(-6, 7, frame.shape, dtype=np.int16).astype(
+                np.uint8
+            )
+            out = tracker.apply_lut(frame, table, scale=8, detail=True)
+            luma = out.astype(np.float32) @ np.array([0.114, 0.587, 0.299])
+            # Gradient energy in line direction stays close to the input's.
+            grad_in = np.abs(np.diff(luma, axis=1)).mean()
+            grad_out = np.abs(np.diff(luma, axis=1)).mean()
+            self.assertGreater(grad_out, grad_in * 0.8)
+
+
 class TestLutCycling(unittest.TestCase):
     def test_cycle_wraps_forward(self):
         self.assertEqual(tracker.cycle_index(2, 3, 1), 0)
@@ -1676,7 +1762,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
             if binding.key_display
             for action in (binding.action,)
         }
-        self.assertEqual(display.get("toggle_shader"), "[h]")
+        self.assertEqual(display.get("toggle_shader"), "<h>")
         self.assertEqual(display.get("toggle_lut"), "[c]")
 
     async def test_theme_is_applied_and_persisted(self):

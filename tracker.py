@@ -384,6 +384,11 @@ def crop_origin(curr_x, curr_y, zoom, in_w, in_h):
     return x1, y1, crop_w, crop_h
 
 
+# Rec.601 luma weights in BGR channel order: the detail term of the
+# lut_detail path is projected onto this so it cannot carry chroma.
+LUMA_OF_BGR = np.array([[0.114, 0.587, 0.299]], dtype=np.float32)
+
+
 def load_lut(path):
     """Parse a .cube 3D LUT into a (N,N,N,3) float32 array (axes r,g,b)."""
     if not path:
@@ -454,8 +459,9 @@ def apply_lut(frame_bgr, table, scale=8, detail=True):
     """Fast LUT application.
 
     Color is computed on a downscaled copy (1/scale), then one of two modes:
-      detail=True  - only the correction (graded - orig) is upscaled and added to
-                     the original: frame sharpness is preserved;
+      detail=True  - the graded frame is upscaled and the luma-only detail
+                     of the original is added back: sharpness is preserved
+                     without leaking the original colors through the detail;
       detail=False - the graded frame itself is upscaled (faster, but softer).
     """
     if table is None:
@@ -476,11 +482,22 @@ def apply_lut(frame_bgr, table, scale=8, detail=True):
     if not detail:
         return cv2.resize(graded, (w, h), interpolation=cv2.INTER_LINEAR)
 
-    # signed correction stored as uint8 with offset 128 (range +-127)
-    delta = cv2.subtract(graded, small, dtype=cv2.CV_16S)
+    # Sharpness detail with the chroma stripped. The naive form
+    # (frame + upscaled correction) keeps the full-res chroma, so a B&W
+    # grade leaks the original colors back at edges and in sensor noise.
+    # Adding only the luma detail to the upscaled graded image preserves
+    # the sharpness this mode exists for without re-tinting the grade.
+    luma = cv2.transform(frame_bgr, LUMA_OF_BGR)
+    luma_small_up = cv2.resize(
+        cv2.transform(small, LUMA_OF_BGR), (w, h), interpolation=cv2.INTER_LINEAR
+    )
+    # Signed luma correction stored as uint8 with offset 128 (range +-127)
+    delta = cv2.subtract(luma, luma_small_up, dtype=cv2.CV_16S)
     delta8 = np.clip(delta + 128, 0, 255).astype(np.uint8)
-    delta8 = cv2.resize(delta8, (w, h), interpolation=cv2.INTER_LINEAR)
-    return cv2.addWeighted(frame_bgr, 1.0, delta8, 1.0, -128.0)
+    graded_up = cv2.resize(graded, (w, h), interpolation=cv2.INTER_LINEAR)
+    return cv2.addWeighted(
+        graded_up, 1.0, cv2.merge([delta8, delta8, delta8]), 1.0, -128.0
+    )
 
 
 def apply_smart_sharpen(frame_bgr, strength=0.3, threshold=10, sigma=2.0):

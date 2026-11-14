@@ -165,8 +165,11 @@ Other overrides: `--lut-scale`, `--detect-every`, `--sharpen/--no-sharpen`,
 back there.
 
 The `[color]` section applies a 3D `.cube` LUT. `lut_scale` downsamples during
-grading for speed (2 = highest quality, higher = faster). It also holds
-`shader_enabled` and `shader_file` for the GPU `.glsl` effect.
+grading for speed (2 = highest quality, higher = faster). With `lut_detail`
+the graded image is upscaled and the original's luma-only detail is added
+back, keeping sharpness without letting full-res chroma bypass the grade
+(a B&W LUT would otherwise leak the original colors at edges and in noise).
+It also holds `shader_enabled` and `shader_file` for the GPU `.glsl` effect.
 
 The `[sharpen]` section applies an edge-aware unsharp mask: only pixels whose
 local contrast exceeds `threshold` are sharpened, so skin stays smooth.
