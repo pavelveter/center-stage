@@ -171,6 +171,24 @@ class TestSaveConfig(unittest.TestCase):
             self.assertTrue(cfg["shader_enabled"])
             self.assertEqual(cfg["shader_file"], "sh.glsl")
 
+    def test_theme_is_loaded_and_saved(self):
+        import configparser
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "center-stage.ini")
+            with open(path, "w") as f:
+                f.write("[appearance]\ntheme = textual-light\n")
+            self.assertEqual(tracker.load_config(path)["theme"], "textual-light")
+
+            cfg = dict(tracker.DEFAULTS)
+            cfg["theme"] = "solarized-light"
+            tracker.save_config(path, cfg)
+            parser = configparser.ConfigParser()
+            parser.read(path)
+            self.assertEqual(parser.get("appearance", "theme"), "solarized-light")
+
 
 class TestSharedState(unittest.TestCase):
     def test_update_marks_dirty_and_merges_into_config(self):
@@ -1660,6 +1678,31 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
         }
         self.assertEqual(display.get("toggle_shader"), "[h]")
         self.assertEqual(display.get("toggle_lut"), "[c]")
+
+    async def test_theme_is_applied_and_persisted(self):
+        import os
+        import tempfile
+
+        import tui
+
+        original = tracker.VideoPipeline
+        tracker.VideoPipeline = self.FakePipeline
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                ini = os.path.join(folder, "t.ini")
+                cfg = dict(tracker.DEFAULTS)
+                cfg["theme"] = "textual-light"
+                app = tui.CenterStageApp(cfg, ini)
+                async with app.run_test(size=(80, 24)) as pilot:
+                    await pilot.pause(0.1)
+                    # The saved theme is applied at startup...
+                    self.assertEqual(app.theme, "textual-light")
+                    # ...and a theme change (command palette) is saved.
+                    app.theme = "textual-dark"
+                    await pilot.pause(0.1)
+                self.assertEqual(tracker.load_config(ini)["theme"], "textual-dark")
+        finally:
+            tracker.VideoPipeline = original
 
 
 

@@ -160,8 +160,9 @@ Other overrides: `--lut-scale`, `--detect-every`, `--sharpen/--no-sharpen`,
 
 ## Tuning
 
-`center-stage.ini` holds `camera`, `capture`, `tracking`, `color`, `sharpen`, and
-`effects` sections. Values changed in the TUI are written back there.
+`center-stage.ini` holds `camera`, `capture`, `tracking`, `color`, `sharpen`,
+`effects`, and `appearance` sections. Values changed in the TUI are written
+back there.
 
 The `[color]` section applies a 3D `.cube` LUT. `lut_scale` downsamples during
 grading for speed (2 = highest quality, higher = faster). It also holds
@@ -173,6 +174,10 @@ local contrast exceeds `threshold` are sharpened, so skin stays smooth.
 
 The `[effects]` section controls the time loop, magic loop, and deep fry
 toggles.
+
+The `[appearance]` section holds `theme`, the Textual color theme of the TUI.
+It is applied at startup and re-saved when you change the theme from the
+command palette (`ctrl+p` -> theme).
 
 ## Tests
 

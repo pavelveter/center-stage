@@ -63,6 +63,7 @@ DEFAULTS = {
     "time_loop_enabled": False, # replay the last second of processed frames
     "deep_fry_enabled": False,  # high-contrast saturation + RGB channel roll
     "magic_loop_enabled": False,  # AFK: play a seamless loop of recent video
+    "theme": "textual-dark",    # Textual TUI theme (change via the command palette)
 }
 
 # Maps INI sections/keys (human-facing) to config keys (code-facing). Both
@@ -109,6 +110,7 @@ INI_MAP = {
         "deep_fry": "deep_fry_enabled",
         "magic_loop": "magic_loop_enabled",
     },
+    "appearance": {"theme": "theme"},
 }
 
 # One second of processed frames at the nominal 30 FPS.

@@ -299,6 +299,11 @@ class CenterStageApp(App):
         self.pipeline.start()
         self.set_interval(TELEMETRY_SECONDS, self.refresh_telemetry)
         self.set_interval(AUTOSAVE_SECONDS, self.autosave)
+        saved_theme = self.cfg.get("theme")
+        if saved_theme and saved_theme in self.available_themes:
+            # Assigning fires watch_theme, which persists the (unchanged)
+            # value only when it differs from the config.
+            self.theme = saved_theme
         self.sync_dependent_controls()
         if self.state.snapshot()["magic_loop_enabled"]:
             # Started with --magic-loop: force tracking off and dim its
@@ -317,6 +322,19 @@ class CenterStageApp(App):
         self.save_if_dirty()
         self.pipeline.stop()
         self.pipeline.join(timeout=5.0)
+
+    def watch_theme(self, theme: str) -> None:
+        """Persist theme changes (e.g. from the command palette) to the INI."""
+        cfg = getattr(self, "cfg", None)
+        if cfg is None or theme == cfg.get("theme"):
+            return
+        cfg["theme"] = theme
+        try:
+            tracker.save_config(self.config_path, self.state.config(cfg))
+        except OSError as exc:
+            self.set_notice(f"save failed: {exc}")
+            return
+        self.set_notice(f"saved {os.path.basename(self.config_path)}")
 
     # --- telemetry -------------------------------------------------------
 
