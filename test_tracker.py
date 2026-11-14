@@ -444,6 +444,39 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
         finally:
             tracker.VideoPipeline = original
 
+    async def test_dependent_controls_follow_their_switch(self):
+        import os
+        import tempfile
+
+        import tui
+
+        original = tracker.VideoPipeline
+        tracker.VideoPipeline = self.FakePipeline
+        try:
+            cfg = dict(tracker.DEFAULTS)
+            cfg["lut_file"] = ""
+            cfg["lut_enabled"] = False
+            cfg["sharpen_enabled"] = False
+            app = tui.CenterStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
+            async with app.run_test(size=(100, 45)) as pilot:
+                await pilot.pause()
+                self.assertTrue(app.query_one("#luts", tui.OptionList).disabled)
+                self.assertTrue(app.query_one("#in-lutscale", tui.Input).disabled)
+                self.assertTrue(app.query_one("#in-sharpen", tui.Input).disabled)
+
+                await pilot.press("l")
+                await pilot.press("s")
+                await pilot.pause()
+                self.assertFalse(app.query_one("#luts", tui.OptionList).disabled)
+                self.assertFalse(app.query_one("#in-lutscale", tui.Input).disabled)
+                self.assertFalse(app.query_one("#in-sharpen", tui.Input).disabled)
+
+                await pilot.press("s")
+                await pilot.pause()
+                self.assertTrue(app.query_one("#in-sharpen", tui.Input).disabled)
+        finally:
+            tracker.VideoPipeline = original
+
 
 
 if __name__ == "__main__":

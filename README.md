@@ -34,14 +34,19 @@ the footer key hints. Tuning fields accept a typed value on `Enter`.
 
 - **Telemetry** - measured FPS, current zoom, `TRACKING`/`IDLE` face status, the
   active virtual-camera device, and the pipeline status.
-- **Tuning** - live `zoom`, `smoothing`, `sharpen_strength`, and `lut_scale`, in
-  the left column right below the telemetry block.
-- **Features** - switches for face tracking, LUT grading, sharpening, the time
-  loop (30-frame ring buffer replayed as a seamless loop), and the deep-fry
-  effect (boosted saturation/contrast with an RGB channel roll).
-- **LUT** - every `.cube` file found in `LUT/` and the working directory at
-  startup. Selecting one bakes its 128^3 lookup table in a background worker,
-  so the video stream never stalls.
+- **Tuning** - live `zoom` and `smoothing`, below the telemetry counters.
+- **LUT** - a bordered group holding the grading switch, the `.cube` file list
+  (every file found in `LUT/` and the working directory at startup, capped at
+  six visible rows), and the `lut_scale` tuner. Switching grading off dims and
+  disables the list and the scale control.
+- **Smart sharpen** - the sharpening switch with its `sharpen_strength` tuner;
+  the tuner is disabled while sharpening is off.
+- **Features** - switches for face tracking, the time loop (30-frame ring
+  buffer replayed as a seamless loop), and the deep-fry effect (boosted
+  saturation/contrast with an RGB channel roll).
+
+Selecting a `.cube` file bakes its 128^3 lookup table in a background worker,
+so the video stream never stalls.
 
 Disabling face tracking eases the view back to the base zoom, centered at
 `0.5, 0.45`, using the same spring/EMA smoothing as tracking.

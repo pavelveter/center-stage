@@ -76,20 +76,29 @@ class CenterStageApp(App):
     #body.compact {
         layout: vertical;
     }
-    #telemetry {
+    #left {
         width: 47;
-        height: auto;
-        padding: 0 1;
-        border: round $primary;
+        height: 1fr;
     }
-    #body.compact #telemetry {
+    #body.compact #left {
         width: 1fr;
-        margin-bottom: 1;
+        height: auto;
     }
     #controls {
         width: 1fr;
         height: 1fr;
-        padding: 0 1;
+    }
+    #body.compact #controls {
+        width: 1fr;
+    }
+    .section {
+        height: auto;
+        border: round $primary;
+        padding: 0 1 1 1;
+        margin-bottom: 1;
+    }
+    .section .panel-title {
+        margin-top: 0;
     }
     .panel-title {
         color: $accent;
@@ -121,8 +130,9 @@ class CenterStageApp(App):
         min-width: 3;
     }
     #luts {
-        height: 12;
-        border: round $primary;
+        height: auto;
+        max-height: 6;
+        margin-bottom: 1;
     }
     """
     # priority bindings keep the shortcuts working while a tuning input or the
@@ -146,38 +156,59 @@ class CenterStageApp(App):
         self.lut_files = tracker.list_lut_files(cfg["lut_file"])
         self.lut_request = ""
 
+    def tuning_row(self, suffix, values):
+        """Yield one labelled minus/input/plus row for a tuning setting."""
+        label, key, _, _, _ = TUNING[suffix]
+        with Horizontal(classes="row"):
+            yield Label(label, classes="name")
+            yield Button("-", id=f"dec-{suffix}")
+            yield Input(value=format_value(suffix, values[key]), id=f"in-{suffix}")
+            yield Button("+", id=f"inc-{suffix}")
+
     def compose(self) -> ComposeResult:
         values = self.state.snapshot()
         yield Header()
         with Horizontal(id="body"):
-            with Vertical(id="telemetry"):
-                yield Static("TELEMETRY", classes="panel-title")
-                yield Static(id="telemetry-body")
-                yield Static("starting", id="notice", classes="notice")
-                yield Static("TUNING", classes="panel-title")
-                for suffix, (label, key, _, _, _) in TUNING.items():
-                    with Horizontal(classes="row"):
-                        yield Label(label, classes="name")
-                        yield Button("-", id=f"dec-{suffix}")
-                        yield Input(
-                            value=format_value(suffix, values[key]),
-                            id=f"in-{suffix}",
-                        )
-                        yield Button("+", id=f"inc-{suffix}")
+            with Vertical(id="left"):
+                with Vertical(classes="section"):
+                    yield Static("TELEMETRY", classes="panel-title")
+                    yield Static(id="telemetry-body")
+                    yield Static("starting", id="notice", classes="notice")
+                    yield Static("TUNING", classes="panel-title")
+                    yield from self.tuning_row("zoom", values)
+                    yield from self.tuning_row("smoothing", values)
             with VerticalScroll(id="controls"):
-                yield Static("FEATURES", classes="panel-title")
-                for widget_id, (label, key) in SWITCHES.items():
+                # LUT grading grouped with its file list and scale control.
+                with Vertical(classes="section", id="lut-section"):
                     with Horizontal(classes="row"):
-                        yield Label(label, classes="name")
-                        yield Switch(value=bool(values[key]), id=widget_id)
-                yield Static("LUT", classes="panel-title")
-                yield OptionList(
-                    *[
-                        Option(os.path.basename(path), id=path)
-                        for path in self.lut_files
-                    ],
-                    id="luts",
-                )
+                        yield Label("LUT grading", classes="name")
+                        yield Switch(
+                            value=bool(values["lut_enabled"]), id="sw-lut"
+                        )
+                    yield OptionList(
+                        *[
+                            Option(os.path.basename(path), id=path)
+                            for path in self.lut_files
+                        ],
+                        id="luts",
+                    )
+                    yield from self.tuning_row("lutscale", values)
+                # Smart sharpen grouped with its strength control.
+                with Vertical(classes="section", id="sharpen-section"):
+                    with Horizontal(classes="row"):
+                        yield Label("Smart sharpen", classes="name")
+                        yield Switch(
+                            value=bool(values["sharpen_enabled"]), id="sw-sharpen"
+                        )
+                    yield from self.tuning_row("sharpen", values)
+                with Vertical(classes="section", id="features"):
+                    yield Static("FEATURES", classes="panel-title")
+                    for widget_id, (label, key) in SWITCHES.items():
+                        if widget_id in ("sw-lut", "sw-sharpen"):
+                            continue
+                        with Horizontal(classes="row"):
+                            yield Label(label, classes="name")
+                            yield Switch(value=bool(values[key]), id=widget_id)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -185,6 +216,7 @@ class CenterStageApp(App):
         self.set_interval(TELEMETRY_SECONDS, self.refresh_telemetry)
         self.set_interval(AUTOSAVE_SECONDS, self.autosave)
         self.highlight_current_lut()
+        self.sync_dependent_controls()
         self.refresh_telemetry()
         current = self.state.snapshot()["lut_file"]
         if current:
@@ -259,12 +291,27 @@ class CenterStageApp(App):
 
     # --- switches and shortcuts -----------------------------------------
 
+    def set_tuning_disabled(self, suffix: str, disabled: bool) -> None:
+        """Dim and disable one tuning row's input and buttons."""
+        self.query_one(f"#in-{suffix}", Input).disabled = disabled
+        self.query_one(f"#dec-{suffix}", Button).disabled = disabled
+        self.query_one(f"#inc-{suffix}", Button).disabled = disabled
+
+    def sync_dependent_controls(self) -> None:
+        """Enable each feature's controls only while that feature is on."""
+        values = self.state.snapshot()
+        lut_on = bool(values["lut_enabled"])
+        self.query_one("#luts", OptionList).disabled = not lut_on
+        self.set_tuning_disabled("lutscale", not lut_on)
+        self.set_tuning_disabled("sharpen", not bool(values["sharpen_enabled"]))
+
     def on_switch_changed(self, event: Switch.Changed) -> None:
         spec = SWITCHES.get(event.switch.id or "")
         if spec is None:
             return
         label, key = spec
         self.state.update(**{key: event.switch.value})
+        self.sync_dependent_controls()
         self.set_notice(f"{label}: {'on' if event.switch.value else 'off'}")
 
     def flip_switch(self, widget_id: str) -> None:
