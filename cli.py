@@ -60,6 +60,16 @@ def parse_args(argv=None):
         help="enable/disable GPU shader processing",
     )
     p.add_argument(
+        "--pip",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="enable/disable PiP slide mode (image background, small webcam)",
+    )
+    p.add_argument(
+        "--pip-image",
+        help="path to the PiP background image (.gif/.jpg/.jpeg/.png)",
+    )
+    p.add_argument(
         "--preview", action="store_true", help="show a debug preview window (costs CPU)"
     )
     p.add_argument(
@@ -108,6 +118,10 @@ def main(argv=None):
         cfg["shader_file"] = args.shader
     if args.shader_enabled is not None:
         cfg["shader_enabled"] = args.shader_enabled
+    if args.pip is not None:
+        cfg["pip_enabled"] = args.pip
+    if args.pip_image is not None:
+        cfg["pip_image"] = args.pip_image
 
     base_dir = (
         os.path.dirname(os.path.abspath(config_path)) if config_path else os.getcwd()
@@ -115,6 +129,9 @@ def main(argv=None):
     # Keep the configured LUT resolvable from the config folder or the working
     # directory; the TUI lists it and the background worker bakes from it.
     cfg["lut_file"] = resolve_lut_path(cfg["lut_file"], base_dir) or ""
+    # The same path resolution applies to the PiP image (config folder, cwd,
+    # or absolute); load_pip_image reports a clear failure when it's missing.
+    cfg["pip_image"] = resolve_lut_path(cfg["pip_image"], base_dir) or ""
 
     # Without an existing config, autosave creates one next to the user.
     if config_path is None:

@@ -6,6 +6,7 @@ from effects import *  # noqa: F401,F403
 from lut import *  # noqa: F401,F403
 from magic_loop import *  # noqa: F401,F403
 from pipeline import *  # noqa: F401,F403
+from pipmode import *  # noqa: F401,F403
 from shaders import *  # noqa: F401,F403
 from state import *  # noqa: F401,F403
 from tracking import *  # noqa: F401,F403
@@ -1455,6 +1456,119 @@ class TestMainCli(unittest.TestCase):
         self.assertTrue(seen["cfg"]["shader_enabled"])
 
 
+class TestPipMode(unittest.TestCase):
+    def test_image_extension_matching_is_case_insensitive(self):
+        for name in ("a.gif", "b.JPG", "c.Jpeg", "d.PNG", "e.png"):
+            self.assertTrue(is_image_file(name), name)
+        for name in ("f.mov", "g.txt", "h.cube", "i.glsl", "gif"):
+            self.assertFalse(is_image_file(name), name)
+
+    def test_list_pip_files_finds_dropped_images(self):
+        import os
+        import tempfile
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as folder:
+            for name in ("slide.png", "MEME.JPG", "notes.txt", "movie.mov"):
+                open(os.path.join(folder, name), "w").close()
+            with mock.patch("pipmode.os.getcwd", return_value=folder):
+                files = list_pip_files("")
+        self.assertEqual(
+            files,
+            sorted(
+                os.path.abspath(os.path.join(folder, name))
+                for name in ("MEME.JPG", "slide.png")
+            ),
+        )
+
+    def test_load_pip_image_letterboxes_to_output_size(self):
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "wide.png")
+            cv2.imwrite(path, np.full((60, 120, 3), 200, dtype=np.uint8))
+            frame = load_pip_image(path, (100, 100))
+        self.assertIsNotNone(frame)
+        self.assertEqual(frame.shape, (100, 100, 3))
+        self.assertEqual(frame.dtype, np.uint8)
+        # Wide source: full width, black bars top and bottom.
+        self.assertEqual(int(frame[0, 50].max()), 0)
+        self.assertEqual(int(frame[99, 50].max()), 0)
+        self.assertEqual(int(frame[50, 50].max()), 200)
+
+    def test_load_pip_image_rejects_missing_and_unreadable(self):
+        self.assertIsNone(load_pip_image("", (64, 64)))
+        self.assertIsNone(load_pip_image("/no/such/file.png", (64, 64)))
+
+    def test_corner_rect_places_the_window_with_margins(self):
+        self.assertEqual(pip_corner_rect(CORNER_TL, 0.25, 0.05, 1920, 1080), (96, 54, 480, 270))
+        self.assertEqual(pip_corner_rect(CORNER_TR, 0.25, 0.05, 1920, 1080), (1344, 54, 480, 270))
+        self.assertEqual(pip_corner_rect(CORNER_BL, 0.25, 0.05, 1920, 1080), (96, 756, 480, 270))
+        self.assertEqual(pip_corner_rect(CORNER_BR, 0.25, 0.05, 1920, 1080), (1344, 756, 480, 270))
+
+    def test_compose_pip_pastes_webcam_into_the_background(self):
+        background = np.full((100, 100, 3), 255, dtype=np.uint8)
+        webcam = np.zeros((10, 10, 3), dtype=np.uint8)
+        webcam[:] = (0, 255, 0)
+        out = compose_pip(np.zeros((100, 100, 3), np.uint8), background, webcam, CORNER_TL, 0.25, 0.05)
+        # Window: x=5, y=5, 25x25 in the top-left corner of the background.
+        self.assertEqual(tuple(out[10, 10]), (0, 255, 0))
+        self.assertEqual(tuple(out[0, 0]), (255, 255, 255))
+        self.assertEqual(tuple(out[40, 40]), (255, 255, 255))
+
+    def test_pip_config_round_trips_through_ini(self):
+        import os
+        import tempfile
+
+        fd, path = tempfile.mkstemp(suffix=".ini")
+        with os.fdopen(fd, "w") as f:
+            f.write("[pip]\nenabled = true\nimage = img/slide.gif\nscale = 0.3\nmargin = 0.08\ncorner = 2\n")
+        try:
+            cfg = load_config(path)
+            self.assertTrue(cfg["pip_enabled"])
+            self.assertEqual(cfg["pip_image"], "img/slide.gif")
+            self.assertAlmostEqual(cfg["pip_scale"], 0.3)
+            self.assertAlmostEqual(cfg["pip_margin"], 0.08)
+            self.assertEqual(cfg["pip_corner"], 2)
+            save_config(path, cfg)
+            again = load_config(path)
+            self.assertEqual(again["pip_enabled"], True)
+            self.assertAlmostEqual(again["pip_scale"], 0.3)
+            self.assertEqual(again["pip_corner"], 2)
+        finally:
+            os.remove(path)
+
+    def test_cli_pip_flags_override_config(self):
+        import os
+        import tempfile
+        import tui
+        from unittest import mock
+
+        seen = {}
+
+        class FakeApp:
+            def __init__(self, cfg, config_path, preview=False):
+                seen["cfg"] = cfg
+
+            def run(self):
+                pass
+
+        with mock.patch.object(tui, "HyperStageApp", FakeApp):
+            main(["--config", os.path.join(tempfile.mkdtemp(), "t.ini"), "--pip", "--pip-image", "/tmp/s.png"])
+        self.assertTrue(seen["cfg"]["pip_enabled"])
+        self.assertEqual(seen["cfg"]["pip_image"], "/tmp/s.png")
+
+    def test_pip_tunables_and_frame_round_trip(self):
+        state = SharedState(dict(DEFAULTS))
+        state.update(pip_enabled=True, pip_corner=CORNER_BR)
+        self.assertTrue(state.snapshot()["pip_enabled"])
+        self.assertEqual(state.snapshot()["pip_corner"], CORNER_BR)
+        frame = np.zeros((4, 4, 3), dtype=np.uint8)
+        state.set_pip_frame(frame)
+        self.assertIs(state.pip_frame, frame)
+
+
 class TestTui(unittest.IsolatedAsyncioTestCase):
     class FakePipeline:
         instances = []
@@ -1759,14 +1873,18 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                         is expected,
                         f"{key} did not toggle {switch_id}",
                     )
-                # Every Latin binding has a Russian counterpart registered.
+                # Every Latin letter binding has a Russian counterpart
+                # registered; multi-character navigation keys (arrows) are
+                # layout-independent and need none.
                 latin = {
-                    b.action for b in tui.HyperStageApp.BINDINGS
-                    if b.key.isascii()
+                    b.action
+                    for b in tui.HyperStageApp.BINDINGS
+                    if len(b.key) == 1 and b.key.isascii()
                 }
                 russian = {
-                    b.action for b in tui.HyperStageApp.BINDINGS
-                    if not b.key.isascii()
+                    b.action
+                    for b in tui.HyperStageApp.BINDINGS
+                    if len(b.key) == 1 and not b.key.isascii()
                 }
                 self.assertEqual(latin, russian)
                 # q equivalent actually shuts the app down (tested last).
@@ -1904,6 +2022,65 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
         finally:
             tui.VideoPipeline = original
 
+    async def test_pip_shortcuts_corner_snap_and_discovery(self):
+        import os
+        import tempfile
+
+        import tui
+
+        original = tui.VideoPipeline
+        tui.VideoPipeline = self.FakePipeline
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                cfg = dict(DEFAULTS)
+                cfg["pip_enabled"] = True
+                image = os.path.join(folder, "slide.png")
+                import cv2
+
+                cv2.imwrite(image, np.zeros((40, 60, 3), dtype=np.uint8))
+                app = tui.HyperStageApp(cfg, os.path.join(folder, "t.ini"))
+                async with app.run_test(size=(100, 45)) as pilot:
+                    await pilot.pause()
+                    # A file dropped into the app directory is discovered...
+                    from unittest import mock
+
+                    with mock.patch("os.getcwd", return_value=folder):
+                        app.refresh_pip_files()
+                    await pilot.pause()
+                    self.assertIn(image, app.pip_files)
+                    self.assertIn(
+                        image,
+                        [option[1] for option in app.pip_options()],
+                    )
+
+                    # ...and selecting it decodes a fitted background frame.
+                    app.apply_pip_image(image)
+                    await pilot.pause(0.3)
+                    self.assertEqual(app.state.snapshot()["pip_image"], image)
+                    self.assertIsNotNone(app.state.pip_frame)
+
+                    # Arrow keys snap the corner when PiP is on with an image.
+                    await pilot.press("right")
+                    await pilot.pause()
+                    self.assertEqual(app.state.snapshot()["pip_corner"], 3)
+                    await pilot.press("up")
+                    await pilot.pause()
+                    self.assertEqual(app.state.snapshot()["pip_corner"], 1)
+
+                    # With PiP off the arrows are refused...
+                    await pilot.press("p")
+                    await pilot.pause()
+                    self.assertFalse(app.state.snapshot()["pip_enabled"])
+                    await pilot.press("left")
+                    await pilot.pause()
+                    self.assertEqual(app.state.snapshot()["pip_corner"], 1)
+
+                    # ...and p/з toggles back on.
+                    await pilot.press("з")
+                    await pilot.pause()
+                    self.assertTrue(app.state.snapshot()["pip_enabled"])
+        finally:
+            tui.VideoPipeline = original
 
 
 if __name__ == "__main__":

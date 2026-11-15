@@ -26,6 +26,9 @@ class SharedState:
         "time_loop_enabled",
         "deep_fry_enabled",
         "magic_loop_enabled",
+        "pip_enabled",
+        "pip_image",
+        "pip_corner",
     )
 
     def __init__(self, cfg):
@@ -39,6 +42,7 @@ class SharedState:
             "status": "starting",
         }
         self._lut_table = None
+        self._pip_frame = None
         self._revision = 0
         self._saved_revision = 0
 
@@ -85,6 +89,17 @@ class SharedState:
         """Replace the active baked LUT table (cheap; consumes a reference)."""
         with self._lock:
             self._lut_table = table
+
+    @property
+    def pip_frame(self):
+        """Decoded PiP background image pre-fitted to the output size, or None."""
+        with self._lock:
+            return self._pip_frame
+
+    def set_pip_frame(self, frame):
+        """Replace the active PiP background frame (cheap; consumes a reference)."""
+        with self._lock:
+            self._pip_frame = frame
 
     def pending_revision(self):
         """Revision to save, or None when everything is already persisted."""

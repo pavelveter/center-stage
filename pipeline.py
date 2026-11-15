@@ -26,6 +26,7 @@ from magic_loop import (
     MAGIC_LOOP_GUARD_SECONDS,
     MagicLoopBuffer,
 )
+from pipmode import compose_pip
 from shaders import MultiShader, ShaderEngine, load_shader
 from state import SharedState
 from tracking import (
@@ -382,6 +383,19 @@ class VideoPipeline(threading.Thread):
                     magic_exit_left -= 1
                     if magic_exit_left == 0:
                         magic_exit_player = None
+
+                # PiP slide mode composites last: LUTs, shaders and sharpening
+                # grade the webcam feed, never the static background image.
+                if state["pip_enabled"]:
+                    background = self.state.pip_frame
+                    if background is not None:
+                        out_frame = compose_pip(
+                            out_frame,
+                            background,
+                            state["pip_corner"],
+                            float(cfg["pip_scale"]),
+                            float(cfg["pip_margin"]),
+                        )
 
                 cam.send(out_frame)
                 cam.sleep_until_next_frame()

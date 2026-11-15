@@ -62,27 +62,27 @@ Screen {
     padding: 0 1;
     margin: 0 1;
 }
-#lut-select {
+#lut-select,
+#shader-select,
+#pip-select {
     width: 1fr;
     height: 1;
     border: none;
     background: $surface-lighten-2;
     margin-bottom: 1;
 }
-#lut-select SelectCurrent {
+#lut-select SelectCurrent,
+#shader-select SelectCurrent,
+#pip-select SelectCurrent {
     border: none !important;
     height: 1;
     padding: 0 1;
 }
-#shader-select {
-    width: 1fr;
+#btn-pip-pick {
+    width: 8;
+    min-width: 8;
     height: 1;
     border: none;
     background: $surface-lighten-2;
-    margin-bottom: 1;
-}
-#shader-select SelectCurrent {
-    border: none !important;
-    height: 1;
-    padding: 0 1;
+    margin: 0 0 1 1;
 }

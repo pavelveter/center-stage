@@ -44,9 +44,11 @@ Click literally anything in the TUI (switches, dropdowns, `-`/`+` buttons, foote
 | `l`       | `д`       | Toggle **1s Time Loop** (freeze time for comedic effect)               |
 | `m`       | `ь`       | Toggle **Magic Loop (AFK)** (ultimate stealth mode, see below)         |
 | `f`       | `а`       | Toggle **Deep Fry / Glitch** (when the meeting could've been an email) |
+| `p`       | `з`       | Toggle **PiP Slide Mode** (meme background, tiny webcam, see below)    |
 | `r`       | `к`       | Hot-reload `LUT/` and `shaders/` folders on the fly                    |
 | `]` / `[` | `ъ` / `х` | Cycle next / previous `.cube` LUT                                      |
 | `>` / `<` | `ю` / `б` | Cycle next / previous `.glsl` shader                                   |
+| `←↑↓→`    | —         | Snap the PiP webcam window to the four corners (when PiP is on)        |
 
 ---
 
@@ -58,6 +60,18 @@ Need to grab an iced oat latte or pet your cat mid-sync without anyone noticing?
 2. **Anti-Sus Guard:** The pipeline ignores the last ~0.8 seconds right before you pressed the key (so nobody sees your hand reaching for the keyboard or your head turning away).
 3. **Vibe-Checked Seamless Loop:** It scans your rolling 10-second compressed history for the chillest 2–5 second window with the lowest motion and cleanest seam, dissolves into it over 0.4s, and loops it seamlessly until you return.
 4. **Clean Re-entry:** Tap `m` again when you're back in your chair—it smoothly crossfades back to live reality and wipes the old buffer. Zero evidence.
+
+---
+
+## 🖼️ PiP Slide / Meme Mode
+
+Presenting? Turn on **PiP Slide Mode** with `p` (or `з`):
+
+1. **Background:** Pick a slide or meme via the **Pick** button (native macOS file dialog) or the dropdown. Drop `.gif/.jpg/.jpeg/.png` files into the app directory and they appear in the dropdown automatically (or hit `r` to rescan instantly).
+2. **Tiny You:** The live webcam shrinks to 25% of the frame and parks 5% from the edges — snap it to any corner with the arrow keys (`←` top-left, `↑` top-right, `↓` bottom-left, `→` bottom-right).
+3. **Grade the feed, not the slide:** LUTs, shaders and sharpening keep applying to your camera feed only; the background image stays pristine.
+
+Scale, edge margin and default corner live in the `[pip]` section of `hyper-stage.ini`.
 
 ---
 
@@ -82,6 +96,7 @@ The TUI keeps things clean in a centered 72-column layout:
   - _GLSL Shader_ + `.glsl` selector
   - _Smart Sharpen_ + `Strength` tuner (edge-gated so you don't look deep-fried unless you want to)
   - _Time Loop (1s)_, _Magic Loop (AFK)_, and _Deep Fry_ switches
+  - _PiP Slide_ + image selector + `Pick` button (native file dialog)
 
 ---
 
@@ -97,7 +112,7 @@ uv run main.py --no-tracking --time-loop --deep-fry
 uv run main.py --shader shaders/crt-tv.glsl --shader-enabled --preview
 ```
 
-Other flags: `--lut-scale`, `--detect-every`, `--sharpen/--no-sharpen`, `--sharpen-strength`, `--magic-loop/--no-magic-loop`.
+Other flags: `--lut-scale`, `--detect-every`, `--sharpen/--no-sharpen`, `--sharpen-strength`, `--magic-loop/--no-magic-loop`, `--pip/--no-pip`, `--pip-image path/to/slide.png`.
 
 Change your TUI color theme anytime via the Textual command palette (`Ctrl+P` → `theme`) — it saves straight to `[appearance]` in your INI file.
 

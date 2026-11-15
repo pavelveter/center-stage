@@ -28,6 +28,13 @@ from textual.widgets import (
 from config import save_config
 from lut import build_lut_table, cycle_index, list_lut_files
 from pipeline import VideoPipeline
+from pipmode import (
+    CORNER_NAMES,
+    is_image_file,
+    list_pip_files,
+    load_pip_image,
+    pick_image_dialog,
+)
 from shaders import list_shader_files
 from state import SharedState
 
@@ -42,6 +49,7 @@ SWITCHES = {
     "sw-loop": ("Time Loop (1s)", "time_loop_enabled"),
     "sw-magic": ("Magic Loop (AFK)", "magic_loop_enabled"),
     "sw-fry": ("Deep Fry", "deep_fry_enabled"),
+    "sw-pip": ("PiP Slide", "pip_enabled"),
 }
 
 # Input suffix -> (label, SharedState key, minimum, maximum, button step).
@@ -55,6 +63,7 @@ TUNING = {
 
 AUTOSAVE_SECONDS = 5.0
 TELEMETRY_SECONDS = 0.25
+PIP_DISCOVERY_SECONDS = 2.0
 
 
 def format_value(suffix, value):
@@ -91,20 +100,29 @@ class HyperStageApp(App):
         Binding("l", "toggle_time_loop", "Loop", priority=True),
         Binding("m", "toggle_magic_loop", "Magic", priority=True),
         Binding("f", "toggle_deep_fry", "Fry", priority=True),
+        Binding("p", "toggle_pip", "PiP", priority=True),
         Binding("r", "reload_files", "Reload", priority=True),
+        # Arrow keys snap the PiP webcam window to the corners; each arrow
+        # points at its corner, clockwise from left. Not priority bindings:
+        # a focused Select or input keeps them for cursor movement.
+        Binding("left", "snap_corner(0)", show=False),
+        Binding("up", "snap_corner(1)", show=False),
+        Binding("down", "snap_corner(2)", show=False),
+        Binding("right", "snap_corner(3)", show=False),
         # LUT cycling stays bound but is not shown in the footer.
         Binding("]", "next_lut", show=False, priority=True),
         Binding("[", "prev_lut", show=False, priority=True),
         # Shader cycling, hidden like the LUT bracket keys.
         Binding(">", "next_shader", show=False, priority=True),
         Binding("<", "prev_shader", show=False, priority=True),
-        # Russian layout equivalents: c/h/l/m sit on с/р/д/ь, the bracket
+        # Russian layout equivalents: c/h/l/m/p sit on с/р/д/ь/з, the bracket
         # keys on ъ/х, and the angle-bracket keys on ю/б under ЙЦУКЕН.
         Binding("с", "toggle_lut", show=False, priority=True),
         Binding("р", "toggle_shader", show=False, priority=True),
         Binding("к", "reload_files", show=False, priority=True),
         Binding("д", "toggle_time_loop", show=False, priority=True),
         Binding("ь", "toggle_magic_loop", show=False, priority=True),
+        Binding("з", "toggle_pip", show=False, priority=True),
         Binding("ъ", "next_lut", show=False, priority=True),
         Binding("х", "prev_lut", show=False, priority=True),
         Binding("ю", "next_shader", show=False, priority=True),
@@ -126,6 +144,8 @@ class HyperStageApp(App):
         self.lut_files = list_lut_files(cfg["lut_file"])
         self.lut_request = ""
         self.shader_files = list_shader_files(cfg["shader_file"])
+        self.pip_files = list_pip_files(cfg["pip_image"])
+        self.pip_request = ""
         # Tracking state to restore when Magic Loop turns off again.
         self._tracking_before_magic = None
 
@@ -157,6 +177,10 @@ class HyperStageApp(App):
     def lut_options(self):
         """(label, path) pairs for the LUT dropdown, blank included."""
         return [(os.path.basename(path), path) for path in self.lut_files]
+
+    def pip_options(self):
+        """(label, path) pairs for the PiP image dropdown, blank included."""
+        return [(os.path.basename(path), path) for path in self.pip_files]
 
     def compose(self) -> ComposeResult:
         values = self.state.snapshot()
@@ -213,12 +237,29 @@ class HyperStageApp(App):
             yield from self.switch_row("Time Loop (1s)", "sw-loop", values)
             yield from self.switch_row("Magic Loop (AFK)", "sw-magic", values)
             yield from self.switch_row("Deep Fry", "sw-fry", values)
+            yield from self.switch_row("PiP Slide", "sw-pip", values)
+            pip_selected = values["pip_image"]
+            if pip_selected not in self.pip_files:
+                pip_selected = Select.NULL
+            with Horizontal(classes="row"):
+                yield Select(
+                    self.pip_options(),
+                    value=pip_selected,
+                    prompt="slide image",
+                    allow_blank=True,
+                    compact=True,
+                    type_to_search=False,
+                    id="pip-select",
+                )
+                yield Button("Pick", id="btn-pip-pick")
         yield Footer()
 
     def on_mount(self) -> None:
         self.pipeline.start()
         self.set_interval(TELEMETRY_SECONDS, self.refresh_telemetry)
         self.set_interval(AUTOSAVE_SECONDS, self.autosave)
+        # Dropped image files appear in the PiP dropdown without a manual rescan.
+        self.set_interval(PIP_DISCOVERY_SECONDS, self.refresh_pip_files)
         saved_theme = self.cfg.get("theme")
         if saved_theme and saved_theme in self.available_themes:
             # Assigning fires watch_theme, which persists the (unchanged)
@@ -237,6 +278,11 @@ class HyperStageApp(App):
             self.bake_lut(current)
         else:
             self.set_notice("no LUT selected")
+        current = self.state.snapshot()["pip_image"]
+        if current:
+            # Set before decoding so the Select's own Changed event is a no-op.
+            self.pip_request = current
+            self.bake_pip_image(current)
 
     def on_unmount(self) -> None:
         self.save_if_dirty()
@@ -324,6 +370,9 @@ class HyperStageApp(App):
         self.query_one("#shader-select", Select).disabled = not bool(
             values["shader_enabled"]
         )
+        pip_on = bool(values["pip_enabled"])
+        self.query_one("#pip-select", Select).disabled = not pip_on
+        self.query_one("#btn-pip-pick", Button).disabled = not pip_on
         self.set_tuning_disabled("sharpen", not bool(values["sharpen_enabled"]))
 
     def on_switch_changed(self, event: Switch.Changed) -> None:
@@ -383,10 +432,11 @@ class HyperStageApp(App):
         self.flip_switch("sw-shader")
 
     def action_reload_files(self) -> None:
-        """Rescan LUT/shader folders and reload the active files."""
+        """Rescan LUT/shader folders and image files, and reload the active files."""
         values = self.state.snapshot()
         self.lut_files = list_lut_files(values["lut_file"])
         self.shader_files = list_shader_files(values["shader_file"])
+        self.pip_files = list_pip_files(values["pip_image"])
         lut = self.query_one("#lut-select", Select)
         lut.set_options([(os.path.basename(p), p) for p in self.lut_files])
         lut.value = (
@@ -403,11 +453,21 @@ class HyperStageApp(App):
             if values["shader_file"] in self.shader_files
             else Select.NULL
         )
+        pip = self.query_one("#pip-select", Select)
+        pip.set_options(self.pip_options())
+        pip.value = (
+            values["pip_image"]
+            if values["pip_image"] in self.pip_files
+            else Select.NULL
+        )
         if values["lut_file"]:
             self.lut_request = values["lut_file"]
             self.bake_lut(values["lut_file"])
+        if values["pip_image"]:
+            self.pip_request = values["pip_image"]
+            self.bake_pip_image(values["pip_image"])
         self.pipeline.reload_shader()
-        self.set_notice("reloaded LUTs and shaders")
+        self.set_notice("reloaded LUTs, shaders and PiP images")
 
     def action_toggle_sharpen(self) -> None:
         self.flip_switch("sw-sharpen")
@@ -420,6 +480,81 @@ class HyperStageApp(App):
 
     def action_toggle_deep_fry(self) -> None:
         self.flip_switch("sw-fry")
+
+    def action_toggle_pip(self) -> None:
+        self.flip_switch("sw-pip")
+
+    def action_snap_corner(self, corner: int) -> None:
+        """Snap the PiP webcam window to a corner; arrow keys land here."""
+        values = self.state.snapshot()
+        if not values["pip_enabled"]:
+            self.set_notice("PiP is off")
+            return
+        if not values["pip_image"]:
+            self.set_notice("no PiP image loaded")
+            return
+        corner = int(corner)
+        self.state.update(pip_corner=corner)
+        self.set_notice(f"PiP corner: {CORNER_NAMES[corner]}")
+
+    @work(thread=True)
+    def action_pick_pip_image(self) -> None:
+        """Open the native macOS file dialog off the TUI thread."""
+        path = pick_image_dialog()
+        if path:
+            self.call_from_thread(self.apply_pip_image, path)
+
+    # --- PiP image selection ---------------------------------------------
+
+    def apply_pip_image(self, path: str) -> None:
+        """Validate, record and decode one image for the PiP background."""
+        if not is_image_file(path):
+            self.set_notice("PiP image must be .gif/.jpg/.jpeg/.png")
+            return
+        path = os.path.abspath(path)
+        self.pip_request = path
+        self.state.update(pip_image=path)
+        if path not in self.pip_files:
+            # A picked file outside the app directory still becomes an option.
+            self.pip_files.append(path)
+            self.pip_files.sort()
+            self.query_one("#pip-select", Select).set_options(self.pip_options())
+        self.query_one("#pip-select", Select).value = path
+        self.set_notice(f"PiP image: {os.path.basename(path)}")
+        self.bake_pip_image(path)
+
+    @work(thread=True, exclusive=True, group="pip")
+    def bake_pip_image(self, path: str) -> None:
+        """Decode and letterbox-fit the image off the TUI thread."""
+        frame = load_pip_image(
+            path, (int(self.cfg["out_w"]), int(self.cfg["out_h"]))
+        )
+        self.call_from_thread(self.pip_image_loaded, path, frame)
+
+    def pip_image_loaded(self, path: str, frame) -> None:
+        """Apply a freshly decoded image, ignoring superseded selections."""
+        if path != self.pip_request:
+            return
+        if frame is None:
+            self.set_notice(f"PiP image failed: {os.path.basename(path)}")
+            return
+        self.state.set_pip_frame(frame)
+        self.set_notice(f"PiP image: {os.path.basename(path)}")
+
+    def refresh_pip_files(self) -> None:
+        """Pick up files dropped into the app directory without a manual rescan."""
+        files = list_pip_files(self.state.snapshot()["pip_image"])
+        if files == self.pip_files:
+            return
+        self.pip_files = files
+        select = self.query_one("#pip-select", Select)
+        select.set_options(self.pip_options())
+        select.value = (
+            self.state.snapshot()["pip_image"]
+            if self.state.snapshot()["pip_image"] in files
+            else Select.NULL
+        )
+        self.set_notice("found new PiP images")
 
     # --- LUT selection ---------------------------------------------------
 
@@ -483,6 +618,10 @@ class HyperStageApp(App):
         """Bake the chosen .cube file, or drop grading on a blank selection."""
         # A blank selection delivers the Select.NULL sentinel, not "".
         value = event.value if isinstance(event.value, str) else ""
+        if event.select.id == "pip-select":
+            if value and value != self.state.snapshot()["pip_image"]:
+                self.apply_pip_image(value)
+            return
         if event.select.id == "shader-select":
             if value and value != self.state.snapshot()["shader_file"]:
                 self.state.update(shader_file=value)
@@ -529,6 +668,9 @@ class HyperStageApp(App):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id or ""
+        if button_id == "btn-pip-pick":
+            self.action_pick_pip_image()
+            return
         for prefix, direction in (("dec-", -1), ("inc-", 1)):
             if not button_id.startswith(prefix):
                 continue

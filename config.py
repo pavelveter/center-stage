@@ -39,6 +39,11 @@ DEFAULTS = {
     "time_loop_enabled": False, # replay the last second of processed frames
     "deep_fry_enabled": False,  # high-contrast saturation + RGB channel roll
     "magic_loop_enabled": False,  # AFK: play a seamless loop of recent video
+    "pip_enabled": False,       # PiP slide mode: image background + small webcam
+    "pip_image": "",            # path to the background image (empty = none)
+    "pip_scale": 0.25,          # webcam window size as a fraction of the frame
+    "pip_margin": 0.05,         # webcam window offset from the edges, fraction
+    "pip_corner": 0,            # default webcam corner: 0 TL, 1 TR, 2 BL, 3 BR
     "theme": "textual-dark",    # Textual TUI theme (change via the command palette)
 }
 
@@ -85,6 +90,13 @@ INI_MAP = {
         "time_loop": "time_loop_enabled",
         "deep_fry": "deep_fry_enabled",
         "magic_loop": "magic_loop_enabled",
+    },
+    "pip": {
+        "enabled": "pip_enabled",
+        "image": "pip_image",
+        "scale": "pip_scale",
+        "margin": "pip_margin",
+        "corner": "pip_corner",
     },
     "appearance": {"theme": "theme"},
 }
@@ -171,7 +183,7 @@ def save_config(path, cfg):
             parser.add_section(section)
         for ini_key, cfg_key in keys.items():
             value = cfg[cfg_key]
-            if cfg_key == "lut_file":
+            if cfg_key in ("lut_file", "pip_image"):
                 value = portable_path(value, directory)
             parser.set(section, ini_key, ini_value(value))
     os.makedirs(directory, exist_ok=True)
