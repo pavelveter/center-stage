@@ -104,13 +104,13 @@ class HyperStageApp(App):
         Binding("p", "toggle_pip", "PiP", priority=True),
         Binding("r", "reload_files", "Reload", priority=True),
         # Arrow keys move the PiP window along one axis each; up/down change
-        # the vertical side, left/right the horizontal one. Priority so a
-        # focused Select or input can never swallow them: corner snapping
-        # must work no matter what the user last clicked.
-        Binding("left", "snap_corner(0, 0)", show=False, priority=True),
+        # the vertical side, left/right the horizontal one. Horizontal sides
+        # are swapped: the call app mirrors the self-preview, so the arrow
+        # must match what the user sees, not the raw stream coordinates.
+        Binding("left", "snap_corner(0, 1)", show=False, priority=True),
         Binding("up", "snap_corner(1, 0)", show=False, priority=True),
         Binding("down", "snap_corner(1, 1)", show=False, priority=True),
-        Binding("right", "snap_corner(0, 1)", show=False, priority=True),
+        Binding("right", "snap_corner(0, 0)", show=False, priority=True),
         # LUT cycling stays bound but is not shown in the footer.
         Binding("]", "next_lut", show=False, priority=True),
         Binding("[", "prev_lut", show=False, priority=True),

@@ -2183,12 +2183,12 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                     self.assertIsNotNone(app.state.pip_frame)
 
                     # Arrows move one axis at a time: down flips the vertical
-                    # side (TL -> BL), right then flips the horizontal one
-                    # (BL -> BR).
+                    # side (TL -> BL), left then flips the horizontal one
+                    # (BL -> BR; swapped to match the mirrored self-preview).
                     await pilot.press("down")
                     await pilot.pause()
                     self.assertEqual(app.state.snapshot()["pip_corner"], 2)
-                    await pilot.press("right")
+                    await pilot.press("left")
                     await pilot.pause()
                     self.assertEqual(app.state.snapshot()["pip_corner"], 3)
 
@@ -2196,7 +2196,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                     await pilot.press("p")
                     await pilot.pause()
                     self.assertFalse(app.state.snapshot()["pip_enabled"])
-                    await pilot.press("left")
+                    await pilot.press("right")
                     await pilot.pause()
                     self.assertEqual(app.state.snapshot()["pip_corner"], 3)
 
