@@ -48,6 +48,10 @@ Screen {
     color: $text-muted;
     margin-right: 1;
 }
+/* The PiP hotkey hint follows the Pick button, so it brings its own gap. */
+.hint-gap {
+    margin-left: 2;
+}
 .row Button {
     width: 3;
     min-width: 3;

@@ -283,7 +283,7 @@ class HyperStageApp(App):
                     id="pip-select",
                 )
                 yield Button("Pick", id="btn-pip-pick")
-                yield Label("- + 1-0", classes="tuner-name")
+                yield Label("- + 1-0", classes="tuner-name hint-gap")
         yield Footer()
 
     def on_mount(self) -> None:
