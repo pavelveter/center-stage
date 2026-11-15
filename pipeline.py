@@ -392,6 +392,7 @@ class VideoPipeline(threading.Thread):
                         out_frame = compose_pip(
                             out_frame,
                             background,
+                            out_frame,
                             state["pip_corner"],
                             float(cfg["pip_scale"]),
                             float(cfg["pip_margin"]),

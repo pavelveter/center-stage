@@ -1290,6 +1290,102 @@ class TestVideoPipeline(unittest.TestCase):
         self.assertGreater(telemetry["fps"], 0.0)
         self.assertFalse(telemetry["tracking"])
 
+    def test_pip_composites_slide_background_with_corner_webcam(self):
+        import time
+        import types
+        from unittest import mock
+
+        import numpy as np
+
+        sent = []
+
+        class FakeCapture:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def isOpened(self):
+                return True
+
+            def set(self, *args):
+                return True
+
+            def read(self):
+                # Distinct green live frame: easy to tell from the background.
+                frame = np.zeros((120, 160, 3), dtype=np.uint8)
+                frame[..., 1] = 128
+                return True, frame
+
+            def release(self):
+                pass
+
+        class FakeCamera:
+            device = "Fake Virtual Camera"
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def send(self, frame):
+                sent.append(frame)
+
+            def sleep_until_next_frame(self):
+                pass
+
+        class FakeDetector:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def detect(self, image):
+                return types.SimpleNamespace(detections=[])
+
+        cfg = dict(DEFAULTS)
+        cfg.update(out_w=160, out_h=90, tracking_enabled=False, pip_enabled=True)
+        state = SharedState(cfg)
+        # A solid blue background, pre-fitted to the output size like the TUI
+        # worker would deliver it.
+        state.set_pip_frame(np.full((90, 160, 3), (255, 10, 10), dtype=np.uint8))
+        pipeline = VideoPipeline(cfg, state)
+        with (
+            mock.patch("pipeline.ensure_model", return_value="fake"),
+            mock.patch.object(cv2, "VideoCapture", FakeCapture),
+            mock.patch.object(pyvirtualcam, "Camera", FakeCamera),
+            mock.patch.object(
+                vision.FaceDetector,
+                "create_from_options",
+                return_value=FakeDetector(),
+            ),
+        ):
+            pipeline.start()
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                if sent and state.telemetry()["fps"] > 0:
+                    break
+                time.sleep(0.005)
+            pipeline.stop()
+            pipeline.join(2.0)
+
+        self.assertFalse(pipeline.is_alive())
+        self.assertGreaterEqual(len(sent), 1)
+        out = sent[0]
+        x, y, w, h = pip_corner_rect(
+            state.snapshot()["pip_corner"],
+            cfg["pip_scale"],
+            cfg["pip_margin"],
+            160,
+            90,
+        )
+        # Center: slide background. Inside the corner window: live webcam.
+        self.assertEqual(tuple(out[45, 80]), (255, 10, 10))
+        self.assertEqual(tuple(out[y + h // 2, x + w // 2]), (0, 128, 0))
+
     def test_magic_loop_replays_a_frozen_seamless_loop(self):
         import time
         import types
