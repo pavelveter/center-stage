@@ -1709,6 +1709,9 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
     class FakePipeline:
         instances = []
 
+        # Mirrors Thread.ident: None until the thread is started.
+        ident = None
+
         def __init__(self, cfg, state, preview=False):
             self.state = state
             self.started = False

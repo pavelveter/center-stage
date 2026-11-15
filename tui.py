@@ -92,11 +92,8 @@ class HyperStageApp(App):
     BINDINGS = [
         Binding("q", "shutdown", "Quit", priority=True),
         Binding("t", "toggle_tracking", "Tracking", priority=True),
-        Binding(
-            "c", "toggle_lut", "LUT", key_display="[c]", priority=True
-        ),
-        Binding("h", "toggle_shader", "Shader", key_display="<h>",
-                priority=True),
+        Binding("c", "toggle_lut", "LUT", key_display="[c]", priority=True),
+        Binding("h", "toggle_shader", "Shader", key_display="<h>", priority=True),
         Binding("s", "toggle_sharpen", "Sharpen", priority=True),
         Binding("l", "toggle_time_loop", "Loop", priority=True),
         Binding("m", "toggle_magic_loop", "Magic", priority=True),
@@ -239,8 +236,17 @@ class HyperStageApp(App):
             yield from self.switch_row("Time Loop (1s)", "sw-loop", values)
             yield from self.switch_row("Magic Loop (AFK)", "sw-magic", values)
             yield from self.switch_row("Deep Fry", "sw-fry", values)
-            yield from self.switch_row("PiP Slide", "sw-pip", values)
-            yield from self.switch_row("PiP Flip", "sw-pip-flip", values)
+
+            with Horizontal(classes="row"):
+                yield Label("PiP Slide / Flip", classes="name")
+                yield Switch(value=bool(values["pip_enabled"]), id="sw-pip")
+                # Little space and second switch for flip
+                yield Static("", classes="switch-spacer-small")
+                yield Label("Flip", classes="tuner-name")
+                yield Switch(value=bool(values["pip_flip"]), id="sw-pip-flip")
+
+            # yield from self.switch_row("PiP Slide", "sw-pip", values)
+            # yield from self.switch_row("PiP Flip", "sw-pip-flip", values)
             pip_selected = values["pip_image"]
             if pip_selected not in self.pip_files:
                 pip_selected = Select.NULL
@@ -290,7 +296,10 @@ class HyperStageApp(App):
     def on_unmount(self) -> None:
         self.save_if_dirty()
         self.pipeline.stop()
-        self.pipeline.join(timeout=5.0)
+        # join() refuses an unstarted thread: if compose or on_mount failed
+        # early, the pipeline never ran and shutdown must not crash on it.
+        if self.pipeline.ident is not None:
+            self.pipeline.join(timeout=5.0)
 
     def watch_theme(self, theme: str) -> None:
         """Persist theme changes (e.g. from the command palette) to the INI."""
@@ -444,14 +453,10 @@ class HyperStageApp(App):
         lut = self.query_one("#lut-select", Select)
         lut.set_options([(os.path.basename(p), p) for p in self.lut_files])
         lut.value = (
-            values["lut_file"]
-            if values["lut_file"] in self.lut_files
-            else Select.NULL
+            values["lut_file"] if values["lut_file"] in self.lut_files else Select.NULL
         )
         shader = self.query_one("#shader-select", Select)
-        shader.set_options(
-            [(os.path.basename(p), p) for p in self.shader_files]
-        )
+        shader.set_options([(os.path.basename(p), p) for p in self.shader_files])
         shader.value = (
             values["shader_file"]
             if values["shader_file"] in self.shader_files
@@ -541,9 +546,7 @@ class HyperStageApp(App):
     @work(thread=True, exclusive=True, group="pip")
     def bake_pip_image(self, path: str) -> None:
         """Decode and letterbox-fit the image off the TUI thread."""
-        frame = load_pip_image(
-            path, (int(self.cfg["out_w"]), int(self.cfg["out_h"]))
-        )
+        frame = load_pip_image(path, (int(self.cfg["out_w"]), int(self.cfg["out_h"])))
         self.call_from_thread(self.pip_image_loaded, path, frame)
 
     def pip_image_loaded(self, path: str, frame) -> None:
