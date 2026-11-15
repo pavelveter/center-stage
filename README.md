@@ -23,7 +23,7 @@ Fire up the pipeline — `start.sh` installs `uv` if missing, syncs the locked d
 or, with `uv` already set up:
 
 ```sh
-uv run tracker.py
+uv run main.py
 ```
 
 Hit `q` (or `Ctrl+C`) to bounce — your settings auto-save before the lights go out. The virtual camera spins up the millisecond your webcam and virtual-cam backend handshake.
@@ -90,11 +90,11 @@ The TUI keeps things clean in a centered 72-column layout:
 Everything you tweak in the UI atomically auto-saves to `hyper-stage.ini` every 5 seconds. Want to launch straight into chaos from the terminal? We got flags:
 
 ```sh
-uv run tracker.py --list-cameras
-uv run tracker.py --config /path/to/hyper-stage.ini
-uv run tracker.py --camera 0 --lut LUT/tarantino-warm.cube
-uv run tracker.py --no-tracking --time-loop --deep-fry
-uv run tracker.py --shader shaders/crt-tv.glsl --shader-enabled --preview
+uv run main.py --list-cameras
+uv run main.py --config /path/to/hyper-stage.ini
+uv run main.py --camera 0 --lut LUT/tarantino-warm.cube
+uv run main.py --no-tracking --time-loop --deep-fry
+uv run main.py --shader shaders/crt-tv.glsl --shader-enabled --preview
 ```
 
 Other flags: `--lut-scale`, `--detect-every`, `--sharpen/--no-sharpen`, `--sharpen-strength`, `--magic-loop/--no-magic-loop`.

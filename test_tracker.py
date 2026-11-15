@@ -1,23 +1,36 @@
 import unittest
 
-import tracker
+from cli import *  # noqa: F401,F403
+from config import *  # noqa: F401,F403
+from effects import *  # noqa: F401,F403
+from lut import *  # noqa: F401,F403
+from magic_loop import *  # noqa: F401,F403
+from pipeline import *  # noqa: F401,F403
+from shaders import *  # noqa: F401,F403
+from state import *  # noqa: F401,F403
+from tracking import *  # noqa: F401,F403
+
+import cv2  # noqa: F401
+import pyvirtualcam  # noqa: F401
+from mediapipe.tasks import python as mp_python  # noqa: F401
+from mediapipe.tasks.python import vision  # noqa: F401
 
 
 class TestCropOrigin(unittest.TestCase):
     def test_centered(self):
-        x1, y1, cw, ch = tracker.crop_origin(0.5, 0.5, 2.0, 1000, 1000)
+        x1, y1, cw, ch = crop_origin(0.5, 0.5, 2.0, 1000, 1000)
         self.assertEqual(cw, 500)
         self.assertEqual(ch, 500)
         self.assertEqual(x1, 250)
         self.assertEqual(y1, 250)
 
     def test_clamped_left_top(self):
-        x1, y1, cw, ch = tracker.crop_origin(0.0, 0.0, 2.0, 1000, 1000)
+        x1, y1, cw, ch = crop_origin(0.0, 0.0, 2.0, 1000, 1000)
         self.assertEqual(x1, 0)
         self.assertEqual(y1, 0)
 
     def test_clamped_right_bottom(self):
-        x1, y1, cw, ch = tracker.crop_origin(1.0, 1.0, 2.0, 1000, 1000)
+        x1, y1, cw, ch = crop_origin(1.0, 1.0, 2.0, 1000, 1000)
         self.assertEqual(x1, 500)
         self.assertEqual(y1, 500)
 
@@ -33,7 +46,7 @@ class TestFaceCenters(unittest.TestCase):
 
     def test_single(self):
         d = self.Det(self.BB(100, 100, 200, 200))
-        centers = tracker.face_centers([d], 640, 360)
+        centers = face_centers([d], 640, 360)
         self.assertEqual(len(centers), 1)
         self.assertAlmostEqual(centers[0][0], (100 + 100) / 640)
         self.assertAlmostEqual(centers[0][1], (100 + 200 * 0.6) / 360)
@@ -41,7 +54,7 @@ class TestFaceCenters(unittest.TestCase):
 
 class TestLoadConfig(unittest.TestCase):
     def test_defaults_when_missing(self):
-        cfg = tracker.load_config(None)
+        cfg = load_config(None)
         self.assertEqual(cfg["camera_index"], 1)
         self.assertEqual(cfg["zoom"], 1.5)
 
@@ -51,7 +64,7 @@ class TestLoadConfig(unittest.TestCase):
         with os.fdopen(fd, "w") as f:
             f.write("[camera]\nindex = 3\n[tracking]\nzoom = 2.0\n")
         try:
-            cfg = tracker.load_config(path)
+            cfg = load_config(path)
             self.assertEqual(cfg["camera_index"], 3)
             self.assertEqual(cfg["zoom"], 2.0)
         finally:
@@ -60,36 +73,36 @@ class TestLoadConfig(unittest.TestCase):
 
 class TestLoadLut(unittest.TestCase):
     def test_loads_cube(self):
-        files = tracker.list_lut_files(None)
+        files = list_lut_files(None)
         if not files:
             self.skipTest("no .cube files in LUT/")
-        lut = tracker.load_lut(files[0])
+        lut = load_lut(files[0])
         self.assertIsNotNone(lut)
         self.assertEqual(lut.dtype, __import__("numpy").float32)
 
     def test_missing_returns_none(self):
-        self.assertIsNone(tracker.load_lut("/no/such/file.cube"))
+        self.assertIsNone(load_lut("/no/such/file.cube"))
 
 
 class TestSmartSharpen(unittest.TestCase):
     def test_flat_area_untouched(self):
         import numpy as np
         frame = np.full((32, 32, 3), 120, dtype=np.uint8)
-        out = tracker.apply_smart_sharpen(frame, strength=0.3, threshold=10)
+        out = apply_smart_sharpen(frame, strength=0.3, threshold=10)
         self.assertTrue((out == frame).all())
 
     def test_edge_is_sharpened(self):
         import numpy as np
         frame = np.zeros((32, 32, 3), dtype=np.uint8)
         frame[:, 16:] = 200
-        out = tracker.apply_smart_sharpen(frame, strength=0.3, threshold=10)
+        out = apply_smart_sharpen(frame, strength=0.3, threshold=10)
         self.assertFalse((out == frame).all())
 
     def test_zero_strength_is_noop(self):
         import numpy as np
         frame = np.zeros((32, 32, 3), dtype=np.uint8)
         frame[:, 16:] = 200
-        out = tracker.apply_smart_sharpen(frame, strength=0.0)
+        out = apply_smart_sharpen(frame, strength=0.0)
         self.assertTrue((out == frame).all())
 
 
@@ -140,10 +153,10 @@ class TestApplyLut(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             path = make_grey_lut(folder)
-            table = tracker.bake_lut(tracker.load_lut(path))
+            table = bake_lut(load_lut(path))
             frame = make_blue_disc_frame()
-            soft = tracker.apply_lut(frame, table, scale=8, detail=False)
-            sharp = tracker.apply_lut(frame, table, scale=8, detail=True)
+            soft = apply_lut(frame, table, scale=8, detail=False)
+            sharp = apply_lut(frame, table, scale=8, detail=True)
             chroma_soft = soft.max(axis=2).astype(int) - soft.min(axis=2)
             chroma_sharp = sharp.max(axis=2).astype(int) - sharp.min(axis=2)
             # The graded low-res image defines how grey the output can be;
@@ -161,7 +174,7 @@ class TestApplyLut(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             path = make_grey_lut(folder)
-            table = tracker.bake_lut(tracker.load_lut(path))
+            table = bake_lut(load_lut(path))
             # Grey step edge plus noise: luma detail must survive.
             frame = np.tile(
                 np.linspace(60, 200, 480, dtype=np.uint8), (270, 1)
@@ -171,7 +184,7 @@ class TestApplyLut(unittest.TestCase):
             frame += rng.integers(-6, 7, frame.shape, dtype=np.int16).astype(
                 np.uint8
             )
-            out = tracker.apply_lut(frame, table, scale=8, detail=True)
+            out = apply_lut(frame, table, scale=8, detail=True)
             luma = out.astype(np.float32) @ np.array([0.114, 0.587, 0.299])
             # Gradient energy in line direction stays close to the input's.
             grad_in = np.abs(np.diff(luma, axis=1)).mean()
@@ -181,18 +194,18 @@ class TestApplyLut(unittest.TestCase):
 
 class TestLutCycling(unittest.TestCase):
     def test_cycle_wraps_forward(self):
-        self.assertEqual(tracker.cycle_index(2, 3, 1), 0)
-        self.assertEqual(tracker.cycle_index(0, 3, 1), 1)
+        self.assertEqual(cycle_index(2, 3, 1), 0)
+        self.assertEqual(cycle_index(0, 3, 1), 1)
 
     def test_cycle_wraps_backward(self):
-        self.assertEqual(tracker.cycle_index(0, 3, -1), 2)
-        self.assertEqual(tracker.cycle_index(1, 3, -1), 0)
+        self.assertEqual(cycle_index(0, 3, -1), 2)
+        self.assertEqual(cycle_index(1, 3, -1), 0)
 
     def test_empty_list_is_safe(self):
-        self.assertEqual(tracker.cycle_index(0, 0, 1), 0)
+        self.assertEqual(cycle_index(0, 0, 1), 0)
 
     def test_lut_files_sorted(self):
-        files = tracker.list_lut_files(None)
+        files = list_lut_files(None)
         self.assertEqual(files, sorted(files))
 
 
@@ -201,7 +214,7 @@ class TestSpringStep(unittest.TestCase):
         pos, vel, target = 1.0, 0.0, 1.5
         omega, zeta, dt = 2.0 * 3.14159 / 0.9, 1.0, 1.0 / 30.0
         for _ in range(300):
-            pos, vel = tracker.spring_step(pos, vel, target, omega, zeta, dt)
+            pos, vel = spring_step(pos, vel, target, omega, zeta, dt)
             self.assertLessEqual(pos, target + 1e-6)
         self.assertAlmostEqual(pos, target, places=3)
 
@@ -216,14 +229,14 @@ class TestSaveConfig(unittest.TestCase):
             path = os.path.join(folder, "hyper-stage.ini")
             with open(path, "w") as f:
                 f.write("[camera]\nindex = 2\n\n[custom]\nkeep = yes\n")
-            cfg = tracker.load_config(path)
+            cfg = load_config(path)
             cfg["zoom"] = 2.25
             cfg["lut_enabled"] = False
             cfg["time_loop_enabled"] = True
             cfg["lut_file"] = os.path.join(folder, "LUT", "a.cube")
-            tracker.save_config(path, cfg)
+            save_config(path, cfg)
 
-            reloaded = tracker.load_config(path)
+            reloaded = load_config(path)
             self.assertEqual(reloaded["camera_index"], 2)
             self.assertEqual(reloaded["zoom"], 2.25)
             self.assertFalse(reloaded["lut_enabled"])
@@ -250,7 +263,7 @@ class TestSaveConfig(unittest.TestCase):
                     "[effects]\ntime_loop = true\ndeep_fry = true\n"
                     "magic_loop = true\n"
                 )
-            cfg = tracker.load_config(path)
+            cfg = load_config(path)
             self.assertTrue(cfg["time_loop_enabled"])
             self.assertTrue(cfg["deep_fry_enabled"])
             self.assertTrue(cfg["magic_loop_enabled"])
@@ -266,11 +279,11 @@ class TestSaveConfig(unittest.TestCase):
             path = os.path.join(folder, "hyper-stage.ini")
             with open(path, "w") as f:
                 f.write("[appearance]\ntheme = textual-light\n")
-            self.assertEqual(tracker.load_config(path)["theme"], "textual-light")
+            self.assertEqual(load_config(path)["theme"], "textual-light")
 
-            cfg = dict(tracker.DEFAULTS)
+            cfg = dict(DEFAULTS)
             cfg["theme"] = "solarized-light"
-            tracker.save_config(path, cfg)
+            save_config(path, cfg)
             parser = configparser.ConfigParser()
             parser.read(path)
             self.assertEqual(parser.get("appearance", "theme"), "solarized-light")
@@ -278,8 +291,8 @@ class TestSaveConfig(unittest.TestCase):
 
 class TestSharedState(unittest.TestCase):
     def test_update_marks_dirty_and_merges_into_config(self):
-        cfg = dict(tracker.DEFAULTS)
-        state = tracker.SharedState(cfg)
+        cfg = dict(DEFAULTS)
+        state = SharedState(cfg)
         self.assertIsNone(state.pending_revision())
         state.update(zoom=2.0)
         self.assertIsNotNone(state.pending_revision())
@@ -288,14 +301,14 @@ class TestSharedState(unittest.TestCase):
         self.assertEqual(state.config(cfg)["fps"], cfg["fps"])
 
     def test_telemetry_does_not_dirty_the_config(self):
-        state = tracker.SharedState(dict(tracker.DEFAULTS))
+        state = SharedState(dict(DEFAULTS))
         state.set_telemetry(fps=29.9, tracking=True)
         self.assertIsNone(state.pending_revision())
         self.assertEqual(state.telemetry()["fps"], 29.9)
         self.assertTrue(state.telemetry()["tracking"])
 
     def test_edit_during_save_stays_pending(self):
-        state = tracker.SharedState(dict(tracker.DEFAULTS))
+        state = SharedState(dict(DEFAULTS))
         state.update(zoom=2.0)
         revision = state.pending_revision()
         state.update(zoom=3.0)
@@ -305,14 +318,14 @@ class TestSharedState(unittest.TestCase):
         self.assertIsNone(state.pending_revision())
 
     def test_unknown_setting_is_rejected(self):
-        state = tracker.SharedState(dict(tracker.DEFAULTS))
+        state = SharedState(dict(DEFAULTS))
         with self.assertRaises(KeyError):
             state.update(no_such_setting=1)
 
 
 class TestTimeLoop(unittest.TestCase):
     def test_records_while_off_and_replays_while_on(self):
-        loop = tracker.TimeLoop(length=3)
+        loop = TimeLoop(length=3)
         self.assertFalse(loop.ready)
         frames = [object(), object(), object()]
         for frame in frames:
@@ -325,7 +338,7 @@ class TestTimeLoop(unittest.TestCase):
         self.assertIs(loop.next_frame(), frames[0])
 
     def test_resuming_live_resets_the_playhead(self):
-        loop = tracker.TimeLoop(length=3)
+        loop = TimeLoop(length=3)
         first, second = object(), object()
         loop.record(first)
         loop.record(second)
@@ -342,7 +355,7 @@ class TestDeepFry(unittest.TestCase):
         frame = np.zeros((48, 64, 3), dtype=np.uint8)
         frame[:, :32] = (40, 90, 200)
         frame[:, 32:] = (210, 120, 30)
-        out = tracker.apply_deep_fry(frame)
+        out = apply_deep_fry(frame)
         self.assertEqual(out.shape, frame.shape)
         self.assertEqual(out.dtype, np.uint8)
         self.assertFalse((out == frame).all())
@@ -354,7 +367,7 @@ class TestMagicLoop(unittest.TestCase):
     def test_build_loop_returns_none_without_enough_history(self):
         import numpy as np
 
-        buf = tracker.MagicLoopBuffer()
+        buf = MagicLoopBuffer()
         frame = np.zeros((180, 320, 3), dtype=np.uint8)
         buf.record(frame, self.CROP)
         self.assertIsNone(buf.build_loop(self.CROP))
@@ -363,11 +376,11 @@ class TestMagicLoop(unittest.TestCase):
         import cv2
         import numpy as np
 
-        buf = tracker.MagicLoopBuffer()
+        buf = MagicLoopBuffer()
         still = np.full((180, 320, 3), 40, dtype=np.uint8)
         # Busy first, then a still stretch long enough to hold a minimum
         # loop (2 s) plus its crossfade tail (span = loop + blend frames).
-        for i in range(tracker.MAGIC_LOOP_MIN_FRAMES + 120):
+        for i in range(MAGIC_LOOP_MIN_FRAMES + 120):
             if i < 30:
                 frame = still.copy()
                 # Busy motion early on: a bar jumps around every frame.
@@ -383,7 +396,7 @@ class TestMagicLoop(unittest.TestCase):
             len(player._frames),
             player._length + player._blend,
         )
-        self.assertGreaterEqual(player._length, tracker.MAGIC_LOOP_MIN_LOOP_FRAMES)
+        self.assertGreaterEqual(player._length, MAGIC_LOOP_MIN_LOOP_FRAMES)
         first = cv2.imdecode(
             np.frombuffer(player._frames[0], np.uint8), cv2.IMREAD_COLOR
         )
@@ -393,10 +406,10 @@ class TestMagicLoop(unittest.TestCase):
     def test_loop_rejects_a_window_shorter_than_two_seconds(self):
         import numpy as np
 
-        buf = tracker.MagicLoopBuffer()
+        buf = MagicLoopBuffer()
         still = np.full((180, 320, 3), 40, dtype=np.uint8)
         # Just under MAGIC_LOOP_MIN_FRAMES: a full calm window cannot exist.
-        for _ in range(tracker.MAGIC_LOOP_MIN_FRAMES - 1):
+        for _ in range(MAGIC_LOOP_MIN_FRAMES - 1):
             buf.record(still, self.CROP)
         self.assertIsNone(buf.build_loop(self.CROP))
 
@@ -411,7 +424,7 @@ class TestMagicLoop(unittest.TestCase):
             ok, jpeg = cv2.imencode(".jpg", frame)
             self.assertTrue(ok)
             encoded.append(jpeg.tobytes())
-        player = tracker.MagicLoopPlayer(encoded, length, blend)
+        player = MagicLoopPlayer(encoded, length, blend)
         out_size = (320, 180)
         frames = [player.next_frame(out_size) for _ in range(length + blend)]
 
@@ -448,7 +461,7 @@ class TestShaderFiles(unittest.TestCase):
                 open(os.path.join(folder, relative), "w").close()
             os.chdir(folder)
             try:
-                files = tracker.list_shader_files(None)
+                files = list_shader_files(None)
             finally:
                 os.chdir(old_cwd)
         self.assertEqual(
@@ -460,16 +473,16 @@ class TestShaderFiles(unittest.TestCase):
         import os
         import tempfile
 
-        self.assertIsNone(tracker.load_shader(""))
-        self.assertIsNone(tracker.load_shader("/no/such/file.glsl"))
+        self.assertIsNone(load_shader(""))
+        self.assertIsNone(load_shader("/no/such/file.glsl"))
         with tempfile.TemporaryDirectory() as folder:
             plain = os.path.join(folder, "plain.glsl")
             open(plain, "w").write("vec3 noop(vec3 c) { return c; }")
-            self.assertIsNone(tracker.load_shader(plain))
+            self.assertIsNone(load_shader(plain))
             good = os.path.join(folder, "good.glsl")
             source = "void mainImage(out vec4 c, in vec2 p) { c = vec4(1.0); }"
             open(good, "w").write(source)
-            self.assertEqual(tracker.load_shader(good), source)
+            self.assertEqual(load_shader(good), source)
 
 
 class TestShaderEngine(unittest.TestCase):
@@ -496,7 +509,7 @@ class TestShaderEngine(unittest.TestCase):
         frame = np.zeros((60, 80, 3), dtype=np.uint8)
         frame[..., 2] = 200  # blue in BGR
         try:
-            engine = tracker.ShaderEngine()
+            engine = ShaderEngine()
             with tempfile.TemporaryDirectory() as folder:
                 path = self._write(folder, "pass.glsl", self.PASSTHROUGH)
                 out = engine.apply(frame, path)
@@ -527,7 +540,7 @@ class TestShaderEngine(unittest.TestCase):
             fragColor = vec4(vec3(1.0) - c, 1.0);
         }
         """
-        engine = tracker.ShaderEngine()
+        engine = ShaderEngine()
         frame = np.zeros((60, 80, 3), dtype=np.uint8)
         frame[10:20, 20:30] = (30, 60, 90)
         try:
@@ -555,7 +568,7 @@ class TestShaderEngine(unittest.TestCase):
                 vec3(n), 0.5), 1.0);
         }
         """
-        engine = tracker.ShaderEngine()
+        engine = ShaderEngine()
         frame = np.full((60, 80, 3), 100, dtype=np.uint8)
         try:
             import tempfile
@@ -586,7 +599,7 @@ class TestShaderEngine(unittest.TestCase):
             fragColor = vec4(mix(c, vec3(1.0), m.x), 1.0);
         }
         """
-        engine = tracker.ShaderEngine()
+        engine = ShaderEngine()
         frame = np.full((40, 50, 3), 90, dtype=np.uint8)
         try:
             with tempfile.TemporaryDirectory() as folder:
@@ -611,7 +624,7 @@ class TestShaderEngine(unittest.TestCase):
             fragColor = vec4(vec3(n), 1.0);
         }
         """
-        engine = tracker.ShaderEngine()
+        engine = ShaderEngine()
         frame = np.zeros((64, 64, 3), dtype=np.uint8)
         try:
             import tempfile
@@ -631,7 +644,7 @@ class TestShaderEngine(unittest.TestCase):
     def test_font_texture_is_a_glyph_atlas(self):
         import numpy as np
 
-        engine = tracker.ShaderEngine()
+        engine = ShaderEngine()
         try:
             engine._ensure_size(8, 8)
             font = engine._aux_texture("font")
@@ -659,11 +672,11 @@ class TestShaderEngine(unittest.TestCase):
             "void mainImage(out vec4 c, in vec2 p) {}\n"
         )
         self.assertEqual(
-            tracker.ShaderEngine.parse_channels(source),
+            ShaderEngine.parse_channels(source),
             {0: "font", 1: "camera", 2: "noise"},
         )
         self.assertEqual(
-            tracker.ShaderEngine.parse_channels("void mainImage() {}"), {}
+            ShaderEngine.parse_channels("void mainImage() {}"), {}
         )
 
     def test_dither_shader_matches_cpu_bayer_reference(self):
@@ -694,7 +707,7 @@ class TestShaderEngine(unittest.TestCase):
             fragColor = vec4(mix(vec3(0.0), vec3(1.0), d), 1.0);
         }
         """
-        engine = tracker.ShaderEngine()
+        engine = ShaderEngine()
         rng = np.random.default_rng(3)
         frame = rng.integers(0, 255, (256, 512, 3), dtype=np.uint8)
         try:
@@ -753,7 +766,7 @@ class TestShaderEngine(unittest.TestCase):
             c = vec4(texture(iChannel0, p / iResolution.xy).rgb, 1.0);
         }
         """
-        engine = tracker.ShaderEngine()
+        engine = ShaderEngine()
         frame = np.zeros((60, 80, 3), dtype=np.uint8)
         frame[5, 40] = (7, 8, 9)  # asymmetric marker near the top
         try:
@@ -794,7 +807,7 @@ class TestShaderEngine(unittest.TestCase):
             fragColor = vec4(0.949, 0.478, 0.176, 1.0); // #F27A2D orange
         }
         """
-        engine = tracker.ShaderEngine()
+        engine = ShaderEngine()
         frame = np.full((40, 50, 3), 90, dtype=np.uint8)
         try:
             with tempfile.TemporaryDirectory() as folder:
@@ -819,7 +832,7 @@ class TestShaderEngine(unittest.TestCase):
         import numpy as np
 
         pack_dir = None
-        engine = tracker.ShaderEngine()
+        engine = ShaderEngine()
         frame = np.zeros((60, 80, 3), dtype=np.uint8)
         frame[..., 0] = 200  # BGR blue
         try:
@@ -829,7 +842,7 @@ class TestShaderEngine(unittest.TestCase):
                 os.chdir(folder)
                 try:
                     # Discovered alongside single files.
-                    found = tracker.list_shader_files(None)
+                    found = list_shader_files(None)
                     self.assertIn(
                         os.path.realpath(os.path.join(folder, "pack.glsl")),
                         [os.path.realpath(p) for p in found],
@@ -894,7 +907,7 @@ class TestShaderEngine(unittest.TestCase):
             with open(os.path.join(pack_dir, "Buffer A.glsl"), "w") as f:
                 f.write("void mainImage(out vec4 c, in vec2 p) { c = vec4(0); }")
             # No Image.glsl: unusable, frame passes through.
-            engine = tracker.ShaderEngine()
+            engine = ShaderEngine()
             try:
                 out = engine.apply(frame, pack_dir)
             except Exception:
@@ -906,7 +919,7 @@ class TestShaderEngine(unittest.TestCase):
 
     def test_pack_channel_directive_parsing(self):
         """Pack pass directives map units to aux names and buffer passes."""
-        parse = tracker.MultiShader.parse_channels
+        parse = MultiShader.parse_channels
         names = ["Buffer A.glsl", "Buffer B.glsl"]
         self.assertEqual(
             parse("// hyper-stage: 1=noise 2=Buffer B", names),
@@ -928,7 +941,7 @@ class TestShaderEngine(unittest.TestCase):
         import numpy as np
 
         pack_dir = None
-        engine = tracker.ShaderEngine()
+        engine = ShaderEngine()
         frame = np.zeros((30, 40, 3), dtype=np.uint8)
         try:
             with tempfile.TemporaryDirectory() as folder:
@@ -986,7 +999,7 @@ class TestShaderEngine(unittest.TestCase):
                 f.write("void mainImage(out vec4 c, in vec2 p) { c = vec4(0); }")
             with open(os.path.join(pack_dir, "Image.glsl"), "w") as f:
                 f.write("void mainImage(out vec4 c {")  # syntax error
-            engine = tracker.ShaderEngine()
+            engine = ShaderEngine()
             try:
                 out = engine.apply(frame, pack_dir)
             except Exception:
@@ -1006,7 +1019,7 @@ class TestShaderEngine(unittest.TestCase):
         import numpy as np
 
         path = None
-        engine = tracker.ShaderEngine()
+        engine = ShaderEngine()
         frame = np.zeros((30, 40, 3), dtype=np.uint8)
         try:
             with tempfile.TemporaryDirectory() as folder:
@@ -1039,7 +1052,7 @@ class TestShaderEngine(unittest.TestCase):
         import numpy as np
 
         pack_dir = None
-        engine = tracker.ShaderEngine()
+        engine = ShaderEngine()
         frame = np.full((32, 32, 3), 200, dtype=np.uint8)
         try:
             with tempfile.TemporaryDirectory() as folder:
@@ -1087,7 +1100,7 @@ class TestShaderEngine(unittest.TestCase):
         import numpy as np
 
         path = None
-        engine = tracker.ShaderEngine()
+        engine = ShaderEngine()
         frame = np.zeros((30, 40, 3), dtype=np.uint8)
         try:
             with tempfile.TemporaryDirectory() as folder:
@@ -1122,7 +1135,7 @@ class TestLutDiscovery(unittest.TestCase):
                 open(os.path.join(folder, relative), "w").close()
             os.chdir(folder)
             try:
-                files = tracker.list_lut_files(None)
+                files = list_lut_files(None)
             finally:
                 os.chdir(old_cwd)
         self.assertEqual(
@@ -1139,15 +1152,17 @@ class TestQuietNativeStderr(unittest.TestCase):
 
         code = (
             "import sys\n"
-            "import tracker\n"
-            "options = tracker.vision.FaceDetectorOptions(\n"
-            "    base_options=tracker.mp_python.BaseOptions(\n"
-            "        model_asset_path=tracker.ensure_model()))\n"
-            "with tracker.quiet_native_stderr():\n"
-            "    ctx = tracker.vision.FaceDetector.create_from_options(options)\n"
+            "from mediapipe.tasks import python as mp_python\n"
+            "from mediapipe.tasks.python import vision\n"
+            "from tracking import ensure_model, quiet_native_stderr\n"
+            "options = vision.FaceDetectorOptions(\n"
+            "    base_options=mp_python.BaseOptions(\n"
+            "        model_asset_path=ensure_model()))\n"
+            "with quiet_native_stderr():\n"
+            "    ctx = vision.FaceDetector.create_from_options(options)\n"
             "    detector = ctx.__enter__()\n"
             "detector.detect  # attribute access proves it is live\n"
-            "with tracker.quiet_native_stderr():\n"
+            "with quiet_native_stderr():\n"
             "    ctx.__exit__(None, None, None)\n"
             "sys.stderr.write('AFTER-MARK\\n')\n"
         )
@@ -1169,8 +1184,9 @@ class TestQuietNativeStderr(unittest.TestCase):
         import sys
 
         code = (
-            "import os, sys, tracker\n"
-            "with tracker.quiet_native_stderr():\n"
+            "import os, sys\n"
+            "from tracking import quiet_native_stderr\n"
+            "with quiet_native_stderr():\n"
             "    os.write(2, b'HIDDEN\\n')\n"
             "os.write(2, b'VISIBLE\\n')\n"
         )
@@ -1241,16 +1257,16 @@ class TestVideoPipeline(unittest.TestCase):
             def detect(self, image):
                 return types.SimpleNamespace(detections=[])
 
-        cfg = dict(tracker.DEFAULTS)
+        cfg = dict(DEFAULTS)
         cfg.update(out_w=160, out_h=90, tracking_enabled=False, sharpen_enabled=True)
-        state = tracker.SharedState(cfg)
-        pipeline = tracker.VideoPipeline(cfg, state)
+        state = SharedState(cfg)
+        pipeline = VideoPipeline(cfg, state)
         with (
-            mock.patch.object(tracker, "ensure_model", return_value="fake"),
-            mock.patch.object(tracker.cv2, "VideoCapture", FakeCapture),
-            mock.patch.object(tracker.pyvirtualcam, "Camera", FakeCamera),
+            mock.patch("pipeline.ensure_model", return_value="fake"),
+            mock.patch.object(cv2, "VideoCapture", FakeCapture),
+            mock.patch.object(pyvirtualcam, "Camera", FakeCamera),
             mock.patch.object(
-                tracker.vision.FaceDetector,
+                vision.FaceDetector,
                 "create_from_options",
                 return_value=FakeDetector(),
             ),
@@ -1335,7 +1351,7 @@ class TestVideoPipeline(unittest.TestCase):
             def detect(self, image):
                 return types.SimpleNamespace(detections=[])
 
-        cfg = dict(tracker.DEFAULTS)
+        cfg = dict(DEFAULTS)
         # Zoom 1.0 keeps the whole frame so the moving column stays visible
         # and every live frame remains distinct.
         cfg.update(
@@ -1345,14 +1361,14 @@ class TestVideoPipeline(unittest.TestCase):
             tracking_enabled=False,
             zoom=1.0,
         )
-        state = tracker.SharedState(cfg)
-        pipeline = tracker.VideoPipeline(cfg, state)
+        state = SharedState(cfg)
+        pipeline = VideoPipeline(cfg, state)
         with (
-            mock.patch.object(tracker, "ensure_model", return_value="fake"),
-            mock.patch.object(tracker.cv2, "VideoCapture", FakeCapture),
-            mock.patch.object(tracker.pyvirtualcam, "Camera", FakeCamera),
+            mock.patch("pipeline.ensure_model", return_value="fake"),
+            mock.patch.object(cv2, "VideoCapture", FakeCapture),
+            mock.patch.object(pyvirtualcam, "Camera", FakeCamera),
             mock.patch.object(
-                tracker.vision.FaceDetector,
+                vision.FaceDetector,
                 "create_from_options",
                 return_value=FakeDetector(),
             ),
@@ -1390,10 +1406,10 @@ class TestMainCli(unittest.TestCase):
         from unittest import mock
 
         with (
-            mock.patch.object(tracker, "list_cameras", return_value=[]) as probe,
+            mock.patch("cli.list_cameras", return_value=[]) as probe,
             mock.patch("builtins.print"),
         ):
-            tracker.main(["--list-cameras"])
+            main(["--list-cameras"])
         probe.assert_called_once()
 
     def test_config_and_flag_overrides_reach_the_app(self):
@@ -1416,7 +1432,7 @@ class TestMainCli(unittest.TestCase):
 
         path = os.path.join(tempfile.mkdtemp(), "custom.ini")
         with mock.patch.object(tui, "HyperStageApp", FakeApp):
-            tracker.main(
+            main(
                 [
                     "--config",
                     path,
@@ -1468,10 +1484,10 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
 
         import tui
 
-        original = tracker.VideoPipeline
-        tracker.VideoPipeline = self.FakePipeline
+        original = tui.VideoPipeline
+        tui.VideoPipeline = self.FakePipeline
         try:
-            cfg = dict(tracker.DEFAULTS)
+            cfg = dict(DEFAULTS)
             cfg["lut_file"] = ""
             cfg["lut_enabled"] = False
             path = os.path.join(tempfile.mkdtemp(), "hyper-stage.ini")
@@ -1505,9 +1521,9 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 self.assertAlmostEqual(app.state.snapshot()["zoom"], 2.5)
 
                 app.autosave()
-                self.assertEqual(tracker.load_config(path)["zoom"], 2.5)
+                self.assertEqual(load_config(path)["zoom"], 2.5)
         finally:
-            tracker.VideoPipeline = original
+            tui.VideoPipeline = original
 
     async def test_magic_loop_syncs_the_tracking_switch(self):
         import os
@@ -1515,10 +1531,10 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
 
         import tui
 
-        original = tracker.VideoPipeline
-        tracker.VideoPipeline = self.FakePipeline
+        original = tui.VideoPipeline
+        tui.VideoPipeline = self.FakePipeline
         try:
-            cfg = dict(tracker.DEFAULTS)
+            cfg = dict(DEFAULTS)
             cfg["lut_file"] = ""
             app = tui.HyperStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
             async with app.run_test(size=(100, 45)) as pilot:
@@ -1544,7 +1560,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(tracking.value)
                 self.assertFalse(tracking.disabled)
         finally:
-            tracker.VideoPipeline = original
+            tui.VideoPipeline = original
 
     async def test_magic_loop_at_startup_forces_tracking_off(self):
         import os
@@ -1552,10 +1568,10 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
 
         import tui
 
-        original = tracker.VideoPipeline
-        tracker.VideoPipeline = self.FakePipeline
+        original = tui.VideoPipeline
+        tui.VideoPipeline = self.FakePipeline
         try:
-            cfg = dict(tracker.DEFAULTS)
+            cfg = dict(DEFAULTS)
             cfg["lut_file"] = ""
             cfg["magic_loop_enabled"] = True
             app = tui.HyperStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
@@ -1573,7 +1589,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(tracking.value)
                 self.assertFalse(tracking.disabled)
         finally:
-            tracker.VideoPipeline = original
+            tui.VideoPipeline = original
 
     async def test_shader_controls_follow_their_switch_and_select(self):
         import os
@@ -1581,10 +1597,10 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
 
         import tui
 
-        original = tracker.VideoPipeline
-        tracker.VideoPipeline = self.FakePipeline
+        original = tui.VideoPipeline
+        tui.VideoPipeline = self.FakePipeline
         try:
-            cfg = dict(tracker.DEFAULTS)
+            cfg = dict(DEFAULTS)
             cfg["lut_file"] = ""
             cfg["shader_enabled"] = False
             app = tui.HyperStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
@@ -1620,7 +1636,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 lut.value = tui.Select.NULL
                 await pilot.pause()
         finally:
-            tracker.VideoPipeline = original
+            tui.VideoPipeline = original
 
     async def test_reload_rescans_files_and_pipeline(self):
         import os
@@ -1628,10 +1644,10 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
 
         import tui
 
-        original = tracker.VideoPipeline
-        tracker.VideoPipeline = self.FakePipeline
+        original = tui.VideoPipeline
+        tui.VideoPipeline = self.FakePipeline
         try:
-            cfg = dict(tracker.DEFAULTS)
+            cfg = dict(DEFAULTS)
             cfg["lut_file"] = ""
             app = tui.HyperStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
             async with app.run_test(size=(100, 45)) as pilot:
@@ -1657,7 +1673,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(shown["next_lut"])
                 self.assertFalse(shown["prev_lut"])
         finally:
-            tracker.VideoPipeline = original
+            tui.VideoPipeline = original
 
     async def test_dependent_controls_follow_their_switch(self):
         import os
@@ -1665,10 +1681,10 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
 
         import tui
 
-        original = tracker.VideoPipeline
-        tracker.VideoPipeline = self.FakePipeline
+        original = tui.VideoPipeline
+        tui.VideoPipeline = self.FakePipeline
         try:
-            cfg = dict(tracker.DEFAULTS)
+            cfg = dict(DEFAULTS)
             cfg["lut_file"] = ""
             cfg["lut_enabled"] = False
             cfg["sharpen_enabled"] = False
@@ -1690,7 +1706,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 self.assertTrue(app.query_one("#in-sharpen", tui.Input).disabled)
         finally:
-            tracker.VideoPipeline = original
+            tui.VideoPipeline = original
 
     async def test_lut_select_updates_state(self):
         import os
@@ -1698,10 +1714,10 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
 
         import tui
 
-        original = tracker.VideoPipeline
-        tracker.VideoPipeline = self.FakePipeline
+        original = tui.VideoPipeline
+        tui.VideoPipeline = self.FakePipeline
         try:
-            cfg = dict(tracker.DEFAULTS)
+            cfg = dict(DEFAULTS)
             cfg["lut_file"] = ""
             cfg["lut_enabled"] = True
             app = tui.HyperStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
@@ -1714,7 +1730,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.state.snapshot()["lut_file"], app.lut_files[0])
                 self.assertIsNotNone(app.state.lut_table)
         finally:
-            tracker.VideoPipeline = original
+            tui.VideoPipeline = original
 
     async def test_russian_layout_equivalents_cover_all_hotkeys(self):
         """Every Latin hotkey fires through its ЙЦУКЕН equivalent key."""
@@ -1723,10 +1739,10 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
 
         import tui
 
-        original = tracker.VideoPipeline
-        tracker.VideoPipeline = self.FakePipeline
+        original = tui.VideoPipeline
+        tui.VideoPipeline = self.FakePipeline
         try:
-            cfg = dict(tracker.DEFAULTS)
+            cfg = dict(DEFAULTS)
             app = tui.HyperStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
             async with app.run_test(size=(100, 45)) as pilot:
                 await pilot.pause(0.1)
@@ -1758,7 +1774,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(0.3)
                 self.assertFalse(app.is_running)
         finally:
-            tracker.VideoPipeline = original
+            tui.VideoPipeline = original
 
     async def test_bracket_keys_cycle_luts(self):
         import os
@@ -1766,10 +1782,10 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
 
         import tui
 
-        original = tracker.VideoPipeline
-        tracker.VideoPipeline = self.FakePipeline
+        original = tui.VideoPipeline
+        tui.VideoPipeline = self.FakePipeline
         try:
-            cfg = dict(tracker.DEFAULTS)
+            cfg = dict(DEFAULTS)
             cfg["lut_file"] = ""
             cfg["lut_enabled"] = True
             app = tui.HyperStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
@@ -1804,7 +1820,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(0.3)
                 self.assertEqual(app.state.snapshot()["lut_file"], files[-1])
         finally:
-            tracker.VideoPipeline = original
+            tui.VideoPipeline = original
 
     async def test_angle_bracket_keys_cycle_shaders(self):
         import os
@@ -1812,10 +1828,10 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
 
         import tui
 
-        original = tracker.VideoPipeline
-        tracker.VideoPipeline = self.FakePipeline
+        original = tui.VideoPipeline
+        tui.VideoPipeline = self.FakePipeline
         try:
-            cfg = dict(tracker.DEFAULTS)
+            cfg = dict(DEFAULTS)
             cfg["shader_file"] = ""
             app = tui.HyperStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
             async with app.run_test(size=(100, 45)) as pilot:
@@ -1849,7 +1865,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(0.3)
                 self.assertEqual(app.state.snapshot()["shader_file"], files[-1])
         finally:
-            tracker.VideoPipeline = original
+            tui.VideoPipeline = original
 
     def test_shader_binding_shows_in_footer_as_h(self):
         import tui
@@ -1869,12 +1885,12 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
 
         import tui
 
-        original = tracker.VideoPipeline
-        tracker.VideoPipeline = self.FakePipeline
+        original = tui.VideoPipeline
+        tui.VideoPipeline = self.FakePipeline
         try:
             with tempfile.TemporaryDirectory() as folder:
                 ini = os.path.join(folder, "t.ini")
-                cfg = dict(tracker.DEFAULTS)
+                cfg = dict(DEFAULTS)
                 cfg["theme"] = "textual-light"
                 app = tui.HyperStageApp(cfg, ini)
                 async with app.run_test(size=(80, 24)) as pilot:
@@ -1884,9 +1900,9 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                     # ...and a theme change (command palette) is saved.
                     app.theme = "textual-dark"
                     await pilot.pause(0.1)
-                self.assertEqual(tracker.load_config(ini)["theme"], "textual-dark")
+                self.assertEqual(load_config(ini)["theme"], "textual-dark")
         finally:
-            tracker.VideoPipeline = original
+            tui.VideoPipeline = original
 
 
 

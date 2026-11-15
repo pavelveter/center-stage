@@ -23,10 +23,10 @@ uv sync
 # Pre-download the face-detector model so the first launch starts offline.
 python_dir="$(uv run python -c 'import sys; print(sys.executable)')"
 "$python_dir" - <<'PY'
-import tracker
-path = tracker.ensure_model()
+from tracking import ensure_model
+path = ensure_model()
 print(f"model ready: {path}")
 PY
 
 # Hand over to the app; the virtual camera needs a real terminal session.
-exec uv run tracker.py "$@"
+exec uv run main.py "$@"

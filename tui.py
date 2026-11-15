@@ -25,7 +25,11 @@ from textual.widgets import (
     Switch,
 )
 
-import tracker
+from config import save_config
+from lut import build_lut_table, cycle_index, list_lut_files
+from pipeline import VideoPipeline
+from shaders import list_shader_files
+from state import SharedState
 
 # Widget id -> (label, SharedState key). Order defines the on-screen order.
 # sw-lut and sw-sharpen are composed inside their own blocks and skipped in
@@ -72,96 +76,7 @@ class HyperStageApp(App):
 
     TITLE = "hyper-stage"
     SUB_TITLE = "virtual camera"
-    CSS = """
-    Screen {
-        align-horizontal: center;
-    }
-    #panel {
-        width: 100%;
-        max-width: 72;
-        height: 1fr;
-        border: round $primary;
-        padding: 0 1 1 1;
-    }
-    .panel-title {
-        color: $accent;
-        text-style: bold;
-        margin-top: 1;
-    }
-    .panel-title.first {
-        margin-top: 0;
-    }
-    #telemetry-body {
-        height: 1;
-    }
-    .notice {
-        color: $text-muted;
-        height: 1;
-    }
-    .row {
-        height: 1;
-        margin-bottom: 1;
-    }
-    .name {
-        width: 22;
-        margin-right: 2;
-    }
-    .row Switch {
-        width: 6;
-        height: 1;
-        padding: 0;
-        border: none;
-        margin: 0 4 0 0;
-    }
-    .switch-spacer {
-        width: 6;
-        margin-right: 4;
-    }
-    .tuner-name {
-        width: 9;
-        color: $text-muted;
-        margin-right: 1;
-    }
-    .row Button {
-        width: 3;
-        min-width: 3;
-        height: 1;
-        border: none;
-        background: $surface-lighten-2;
-        margin: 0;
-    }
-    .row Input {
-        width: 8;
-        height: 1;
-        border: none;
-        padding: 0 1;
-        margin: 0 1;
-    }
-    #lut-select {
-        width: 1fr;
-        height: 1;
-        border: none;
-        background: $surface-lighten-2;
-        margin-bottom: 1;
-    }
-    #lut-select SelectCurrent {
-        border: none !important;
-        height: 1;
-        padding: 0 1;
-    }
-    #shader-select {
-        width: 1fr;
-        height: 1;
-        border: none;
-        background: $surface-lighten-2;
-        margin-bottom: 1;
-    }
-    #shader-select SelectCurrent {
-        border: none !important;
-        height: 1;
-        padding: 0 1;
-    }
-    """
+    CSS_PATH = "app.tcss"
     # priority bindings keep the shortcuts working while a tuning input or the
     # LUT list has focus; the inputs accept numbers only.
     BINDINGS = [
@@ -206,11 +121,11 @@ class HyperStageApp(App):
         self.cfg = cfg
         self.config_path = config_path
         self.preview = preview
-        self.state = tracker.SharedState(cfg)
-        self.pipeline = tracker.VideoPipeline(cfg, self.state, preview=preview)
-        self.lut_files = tracker.list_lut_files(cfg["lut_file"])
+        self.state = SharedState(cfg)
+        self.pipeline = VideoPipeline(cfg, self.state, preview=preview)
+        self.lut_files = list_lut_files(cfg["lut_file"])
         self.lut_request = ""
-        self.shader_files = tracker.list_shader_files(cfg["shader_file"])
+        self.shader_files = list_shader_files(cfg["shader_file"])
         # Tracking state to restore when Magic Loop turns off again.
         self._tracking_before_magic = None
 
@@ -335,7 +250,7 @@ class HyperStageApp(App):
             return
         cfg["theme"] = theme
         try:
-            tracker.save_config(self.config_path, self.state.config(cfg))
+            save_config(self.config_path, self.state.config(cfg))
         except OSError as exc:
             self.set_notice(f"save failed: {exc}")
             return
@@ -373,7 +288,7 @@ class HyperStageApp(App):
         if revision is None:
             return True
         try:
-            tracker.save_config(self.config_path, self.state.config(self.cfg))
+            save_config(self.config_path, self.state.config(self.cfg))
         except OSError as exc:
             self.set_notice(f"save failed: {exc}")
             return False
@@ -470,8 +385,8 @@ class HyperStageApp(App):
     def action_reload_files(self) -> None:
         """Rescan LUT/shader folders and reload the active files."""
         values = self.state.snapshot()
-        self.lut_files = tracker.list_lut_files(values["lut_file"])
-        self.shader_files = tracker.list_shader_files(values["shader_file"])
+        self.lut_files = list_lut_files(values["lut_file"])
+        self.shader_files = list_shader_files(values["shader_file"])
         lut = self.query_one("#lut-select", Select)
         lut.set_options([(os.path.basename(p), p) for p in self.lut_files])
         lut.value = (
@@ -520,7 +435,7 @@ class HyperStageApp(App):
             # Nothing selected yet: move to the first file going forward and
             # to the last one going backward.
             index = -1 if step > 0 else 0
-        next_index = tracker.cycle_index(index, len(self.lut_files), step)
+        next_index = cycle_index(index, len(self.lut_files), step)
         path = self.lut_files[next_index]
         if path == current and current:
             return
@@ -550,7 +465,7 @@ class HyperStageApp(App):
             # Nothing selected yet: move to the first file going forward and
             # to the last one going backward.
             index = -1 if step > 0 else 0
-        next_index = tracker.cycle_index(index, len(self.shader_files), step)
+        next_index = cycle_index(index, len(self.shader_files), step)
         path = self.shader_files[next_index]
         if path == current and current:
             return
@@ -585,7 +500,7 @@ class HyperStageApp(App):
     @work(thread=True, exclusive=True, group="lut")
     def bake_lut(self, path: str) -> None:
         """Bake a LUT in the background so the video stream never stalls."""
-        table = tracker.build_lut_table(path)
+        table = build_lut_table(path)
         self.call_from_thread(self.lut_baked, path, table)
 
     def lut_baked(self, path: str, table) -> None:
