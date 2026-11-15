@@ -108,6 +108,20 @@ class HyperStageApp(App):
         Binding("up", "snap_corner(1, 0)", show=False, priority=True),
         Binding("down", "snap_corner(1, 1)", show=False, priority=True),
         Binding("right", "snap_corner(0, 0)", show=False, priority=True),
+        # -/+ step through the discovered PiP images, 1-0 jump to the first
+        # ten; the hint lives next to the PiP dropdown.
+        Binding("minus,underscore", "pip_prev", show=False, priority=True),
+        Binding("equals_sign,plus", "pip_next", show=False, priority=True),
+        Binding("1", "pip_index(0)", show=False, priority=True),
+        Binding("2", "pip_index(1)", show=False, priority=True),
+        Binding("3", "pip_index(2)", show=False, priority=True),
+        Binding("4", "pip_index(3)", show=False, priority=True),
+        Binding("5", "pip_index(4)", show=False, priority=True),
+        Binding("6", "pip_index(5)", show=False, priority=True),
+        Binding("7", "pip_index(6)", show=False, priority=True),
+        Binding("8", "pip_index(7)", show=False, priority=True),
+        Binding("9", "pip_index(8)", show=False, priority=True),
+        Binding("0", "pip_index(9)", show=False, priority=True),
         # LUT cycling stays bound but is not shown in the footer.
         Binding("]", "next_lut", show=False, priority=True),
         Binding("[", "prev_lut", show=False, priority=True),
@@ -178,8 +192,18 @@ class HyperStageApp(App):
         return [(os.path.basename(path), path) for path in self.lut_files]
 
     def pip_options(self):
-        """(label, path) pairs for the PiP image dropdown, blank included."""
-        return [(os.path.basename(path), path) for path in self.pip_files]
+        """(label, path) pairs for the PiP image dropdown, blank included.
+
+        Labels include the parent folder, so same-named files from
+        different directories stay distinguishable.
+        """
+        return [
+            (
+                f"…/{os.path.basename(os.path.dirname(path))}/{os.path.basename(path)}",
+                path,
+            )
+            for path in self.pip_files
+        ]
 
     def compose(self) -> ComposeResult:
         values = self.state.snapshot()
@@ -259,6 +283,7 @@ class HyperStageApp(App):
                     id="pip-select",
                 )
                 yield Button("Pick", id="btn-pip-pick")
+                yield Label("- + 1-0", classes="tuner-name")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -519,6 +544,30 @@ class HyperStageApp(App):
             self.call_from_thread(self.apply_pip_image, path)
 
     # --- PiP image selection ---------------------------------------------
+
+    def action_pip_prev(self) -> None:
+        self.cycle_pip_image(-1)
+
+    def action_pip_next(self) -> None:
+        self.cycle_pip_image(1)
+
+    def action_pip_index(self, index: int) -> None:
+        if index < len(self.pip_files):
+            self.apply_pip_image(self.pip_files[index])
+
+    def cycle_pip_image(self, step: int) -> None:
+        """Select the previous (step=-1) or next (step=1) image, wrapping.
+
+        With no image selected yet, next picks the first file and prev the
+        last one. Works while PiP is off, like the dropdown and Pick.
+        """
+        if not self.pip_files:
+            self.set_notice("no PiP images found")
+            return
+        current = self.state.snapshot()["pip_image"]
+        index = self.pip_files.index(current) if current in self.pip_files else -1
+        index = (index + step) % len(self.pip_files)
+        self.apply_pip_image(self.pip_files[index])
 
     def apply_pip_image(self, path: str) -> None:
         """Validate, record and decode one image for the PiP background."""

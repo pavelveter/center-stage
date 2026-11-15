@@ -2020,12 +2020,13 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                         f"{key} did not toggle {switch_id}",
                     )
                 # Every Latin letter binding has a Russian counterpart
-                # registered; multi-character navigation keys (arrows) are
-                # layout-independent and need none.
+                # registered; multi-character navigation keys (arrows) and
+                # layout-invariant keys (digits, -/+) are the same on both
+                # layouts and need none.
                 latin = {
                     b.action
                     for b in tui.HyperStageApp.BINDINGS
-                    if len(b.key) == 1 and b.key.isascii()
+                    if len(b.key) == 1 and b.key.isascii() and not b.key.isdigit()
                 }
                 russian = {
                     b.action
@@ -2241,6 +2242,35 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                     app.query_one("#sw-pip-flip", tui.Switch).value = True
                     await pilot.pause()
                     self.assertTrue(app.state.snapshot()["pip_flip"])
+
+                    # Dropdown labels show the parent folder, not just the
+                    # file name.
+                    second = os.path.join(folder, "meme.png")
+                    cv2.imwrite(second, np.zeros((40, 60, 3), dtype=np.uint8))
+                    with mock.patch("os.getcwd", return_value=folder):
+                        app.refresh_pip_files()
+                    await pilot.pause()
+                    folder_label = f"…/{os.path.basename(folder)}/"
+                    self.assertEqual(
+                        [option[0] for option in app.pip_options()],
+                        [folder_label + "meme.png", folder_label + "slide.png"],
+                    )
+
+                    # +/- cycle the sorted images with wrap-around...
+                    await pilot.press("plus")
+                    await pilot.pause()
+                    self.assertEqual(app.state.snapshot()["pip_image"], second)
+                    await pilot.press("plus")
+                    await pilot.pause()
+                    self.assertEqual(app.state.snapshot()["pip_image"], image)
+                    await pilot.press("minus")
+                    await pilot.pause()
+                    self.assertEqual(app.state.snapshot()["pip_image"], second)
+
+                    # ...and digits jump to the first ten (2 -> second entry).
+                    await pilot.press("2")
+                    await pilot.pause()
+                    self.assertEqual(app.state.snapshot()["pip_image"], image)
         finally:
             tui.VideoPipeline = original
 
