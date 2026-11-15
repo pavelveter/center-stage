@@ -59,14 +59,13 @@ def load_pip_image(path, size):
 
     Aspect ratio is preserved with black bars, so slides and memes are never
     cropped or distorted. Animated .gif files use their first frame.
-    Returns (frame, content_rect) where content_rect is (x, y, w, h) of the
-    actual picture inside the frame, or (None, None) when unreadable.
+    Returns None when the file cannot be read.
     """
     if not path or not os.path.exists(path):
-        return None, None
+        return None
     image = cv2.imread(path, cv2.IMREAD_COLOR)
     if image is None:
-        return None, None
+        return None
     out_w, out_h = size
     src_h, src_w = image.shape[:2]
     scale = min(out_w / src_w, out_h / src_h)
@@ -77,48 +76,43 @@ def load_pip_image(path, size):
     x = (out_w - scaled_w) // 2
     y = (out_h - scaled_h) // 2
     canvas[y : y + scaled_h, x : x + scaled_w] = resized
-    return canvas, (x, y, scaled_w, scaled_h)
+    return canvas
 
 
-def pip_corner_rect(corner, scale, margin, out_w, out_h, bounds=None):
+def pip_corner_rect(corner, scale, margin, out_w, out_h):
     """(x, y, w, h) of the webcam window for one corner.
 
-    scale and margin are fractions of the full output frame; corner is one of
-    the CORNER_* constants. bounds limits placement: when the background is
-    letterboxed, the window snaps inside the picture with its margin measured
-    from the picture's edges, not the frame's. Results stay inside bounds.
+    scale and margin are fractions of the whole output frame, and the margin
+    is measured from the frame edges; corner is one of the CORNER_*
+    constants. Results are rounded and always inside the frame.
     """
-    if bounds is None:
-        bounds = (0, 0, out_w, out_h)
-    bx, by, bw, bh = bounds
-    # Window size is a fraction of the full frame but never larger than the
-    # picture it must sit in.
-    w = max(1, min(bw, round(out_w * scale)))
-    h = max(1, min(bh, round(out_h * scale)))
-    mx = max(0, min(bw - w, round(bw * margin)))
-    my = max(0, min(bh - h, round(bh * margin)))
-    x = bx + (mx if corner in (CORNER_TL, CORNER_BL) else bw - w - mx)
-    y = by + (my if corner in (CORNER_TL, CORNER_TR) else bh - h - my)
+    w = max(1, min(out_w, round(out_w * scale)))
+    h = max(1, min(out_h, round(out_h * scale)))
+    mx = max(0, min(out_w - w, round(out_w * margin)))
+    my = max(0, min(out_h - h, round(out_h * margin)))
+    x = mx if corner in (CORNER_TL, CORNER_BL) else out_w - w - mx
+    y = my if corner in (CORNER_TL, CORNER_TR) else out_h - h - my
     return x, y, w, h
 
 
-def compose_pip(canvas, background, webcam, corner, scale, margin, content=None):
+def compose_pip(canvas, background, webcam, corner, scale, margin, flip=False):
     """Background image plus the webcam window snapped into one corner.
 
     background is a pre-fitted frame (see load_pip_image); it is copied, never
     mutated, because SharedState shares it with the video thread. The webcam
-    frame is resized to the corner window size. content is the background's
-    picture rectangle (from load_pip_image); the window keeps its margin from
-    the picture's edges on every side.
+    frame is resized to the corner window size. flip mirrors the background
+    horizontally, undoing a mirror applied by the video-call app.
     """
     bg = background
     if bg.shape[:2] != canvas.shape[:2]:
         bg = cv2.resize(
             bg, (canvas.shape[1], canvas.shape[0]), interpolation=cv2.INTER_LINEAR
         )
+    if flip:
+        bg = cv2.flip(bg, 1)
     out = bg.copy()
     h, w = canvas.shape[:2]
-    x, y, pw, ph = pip_corner_rect(corner, scale, margin, w, h, bounds=content)
+    x, y, pw, ph = pip_corner_rect(corner, scale, margin, w, h)
     if webcam.shape[:2] != (ph, pw):
         webcam = cv2.resize(webcam, (pw, ph), interpolation=cv2.INTER_AREA)
     out[y : y + ph, x : x + pw] = webcam

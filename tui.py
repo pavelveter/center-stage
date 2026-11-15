@@ -50,6 +50,7 @@ SWITCHES = {
     "sw-magic": ("Magic Loop (AFK)", "magic_loop_enabled"),
     "sw-fry": ("Deep Fry", "deep_fry_enabled"),
     "sw-pip": ("PiP Slide", "pip_enabled"),
+    "sw-pip-flip": ("PiP Flip", "pip_flip"),
 }
 
 # Input suffix -> (label, SharedState key, minimum, maximum, button step).
@@ -102,14 +103,14 @@ class HyperStageApp(App):
         Binding("f", "toggle_deep_fry", "Fry", priority=True),
         Binding("p", "toggle_pip", "PiP", priority=True),
         Binding("r", "reload_files", "Reload", priority=True),
-        # Arrow keys snap the PiP webcam window to the corners; each arrow
-        # points at its corner, clockwise from left. Priority so a focused
-        # Select or input can never swallow them: corner snapping must work
-        # no matter what the user last clicked.
-        Binding("left", "snap_corner(0)", show=False, priority=True),
-        Binding("up", "snap_corner(1)", show=False, priority=True),
-        Binding("down", "snap_corner(2)", show=False, priority=True),
-        Binding("right", "snap_corner(3)", show=False, priority=True),
+        # Arrow keys move the PiP window along one axis each; up/down change
+        # the vertical side, left/right the horizontal one. Priority so a
+        # focused Select or input can never swallow them: corner snapping
+        # must work no matter what the user last clicked.
+        Binding("left", "snap_corner(0, 0)", show=False, priority=True),
+        Binding("up", "snap_corner(1, 0)", show=False, priority=True),
+        Binding("down", "snap_corner(1, 1)", show=False, priority=True),
+        Binding("right", "snap_corner(0, 1)", show=False, priority=True),
         # LUT cycling stays bound but is not shown in the footer.
         Binding("]", "next_lut", show=False, priority=True),
         Binding("[", "prev_lut", show=False, priority=True),
@@ -239,6 +240,7 @@ class HyperStageApp(App):
             yield from self.switch_row("Magic Loop (AFK)", "sw-magic", values)
             yield from self.switch_row("Deep Fry", "sw-fry", values)
             yield from self.switch_row("PiP Slide", "sw-pip", values)
+            yield from self.switch_row("PiP Flip", "sw-pip-flip", values)
             pip_selected = values["pip_image"]
             if pip_selected not in self.pip_files:
                 pip_selected = Select.NULL
@@ -374,6 +376,7 @@ class HyperStageApp(App):
         pip_on = bool(values["pip_enabled"])
         self.query_one("#pip-select", Select).disabled = not pip_on
         self.query_one("#btn-pip-pick", Button).disabled = not pip_on
+        self.query_one("#sw-pip-flip", Switch).disabled = not pip_on
         self.set_tuning_disabled("sharpen", not bool(values["sharpen_enabled"]))
 
     def on_switch_changed(self, event: Switch.Changed) -> None:
@@ -485,8 +488,13 @@ class HyperStageApp(App):
     def action_toggle_pip(self) -> None:
         self.flip_switch("sw-pip")
 
-    def action_snap_corner(self, corner: int) -> None:
-        """Snap the PiP webcam window to a corner; arrow keys land here."""
+    def action_snap_corner(self, axis: int, value: int) -> None:
+        """Move the PiP window along one axis; the arrow keys land here.
+
+        axis 0 = X (left/right side), axis 1 = Y (top/bottom side); value
+        0 or 1 picks the side. The other axis keeps its current side, so
+        each arrow moves the window instead of jumping to a fixed corner.
+        """
         values = self.state.snapshot()
         if not values["pip_enabled"]:
             self.set_notice("PiP is off")
@@ -494,9 +502,15 @@ class HyperStageApp(App):
         if not values["pip_image"]:
             self.set_notice("no PiP image loaded")
             return
-        corner = int(corner)
+        corner = int(values["pip_corner"])
+        x_right, y_bottom = corner & 1, corner >> 1
+        if axis == 1:
+            y_bottom = 1 if value else 0
+        else:
+            x_right = 1 if value else 0
+        corner = x_right + 2 * y_bottom
         self.state.update(pip_corner=corner)
-        self.set_notice(f"PiP corner: {CORNER_NAMES[corner]}")
+        self.set_notice(f"PiP position: {CORNER_NAMES[corner]}")
 
     @work(thread=True)
     def action_pick_pip_image(self) -> None:
@@ -527,19 +541,19 @@ class HyperStageApp(App):
     @work(thread=True, exclusive=True, group="pip")
     def bake_pip_image(self, path: str) -> None:
         """Decode and letterbox-fit the image off the TUI thread."""
-        frame, content = load_pip_image(
+        frame = load_pip_image(
             path, (int(self.cfg["out_w"]), int(self.cfg["out_h"]))
         )
-        self.call_from_thread(self.pip_image_loaded, path, frame, content)
+        self.call_from_thread(self.pip_image_loaded, path, frame)
 
-    def pip_image_loaded(self, path: str, frame, content) -> None:
+    def pip_image_loaded(self, path: str, frame) -> None:
         """Apply a freshly decoded image, ignoring superseded selections."""
         if path != self.pip_request:
             return
         if frame is None:
             self.set_notice(f"PiP image failed: {os.path.basename(path)}")
             return
-        self.state.set_pip_frame(frame, content)
+        self.state.set_pip_frame(frame)
         self.set_notice(f"PiP image: {os.path.basename(path)}")
 
     def refresh_pip_files(self) -> None:

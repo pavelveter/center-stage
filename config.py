@@ -41,6 +41,7 @@ DEFAULTS = {
     "magic_loop_enabled": False,  # AFK: play a seamless loop of recent video
     "pip_enabled": False,       # PiP slide mode: image background + small webcam
     "pip_image": "",            # path to the background image (empty = none)
+    "pip_flip": False,          # mirror the background image horizontally
     "pip_scale": 0.25,          # webcam window size as a fraction of the frame
     "pip_margin": 0.05,         # webcam window offset from the edges, fraction
     "pip_corner": 0,            # default webcam corner: 0 TL, 1 TR, 2 BL, 3 BR
@@ -94,6 +95,7 @@ INI_MAP = {
     "pip": {
         "enabled": "pip_enabled",
         "image": "pip_image",
+        "flip": "pip_flip",
         "scale": "pip_scale",
         "margin": "pip_margin",
         "corner": "pip_corner",

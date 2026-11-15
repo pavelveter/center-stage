@@ -48,7 +48,7 @@ Click literally anything in the TUI (switches, dropdowns, `-`/`+` buttons, foote
 | `r`       | `к`       | Hot-reload `LUT/` and `shaders/` folders on the fly                    |
 | `]` / `[` | `ъ` / `х` | Cycle next / previous `.cube` LUT                                      |
 | `>` / `<` | `ю` / `б` | Cycle next / previous `.glsl` shader                                   |
-| `←↑↓→`    | —         | Snap the PiP webcam window to the four corners (when PiP is on)        |
+| `←↑↓→`    | —         | Move the PiP window: up/down pick top/bottom, left/right pick the side |
 
 ---
 
@@ -68,7 +68,7 @@ Need to grab an iced oat latte or pet your cat mid-sync without anyone noticing?
 Presenting? Turn on **PiP Slide Mode** with `p` (or `з`):
 
 1. **Background:** Pick a slide or meme via the **Pick** button (native macOS file dialog) or the dropdown. Drop `.gif/.jpg/.jpeg/.png` files into the app directory and they appear in the dropdown automatically (or hit `r` to rescan instantly).
-2. **Tiny You:** The live webcam shrinks to 25% of the frame and parks 5% from the edges — snap it to any corner with the arrow keys (`←` top-left, `↑` top-right, `↓` bottom-left, `→` bottom-right).
+2. **Tiny You:** The live webcam shrinks to 25% of the frame and parks 5% from the stream edges — arrows move it one axis at a time (`↑`/`↓` pick top/bottom, `←`/`→` pick left/right, the other axis stays put). Seeing your slide mirrored in the call? Flip on **PiP Flip** right below the toggle.
 3. **Grade the feed, not the slide:** LUTs, shaders and sharpening keep applying to your camera feed only; the background image stays pristine.
 
 Scale, edge margin and default corner live in the `[pip]` section of `hyper-stage.ini`.
@@ -96,7 +96,7 @@ The TUI keeps things clean in a centered 72-column layout:
   - _GLSL Shader_ + `.glsl` selector
   - _Smart Sharpen_ + `Strength` tuner (edge-gated so you don't look deep-fried unless you want to)
   - _Time Loop (1s)_, _Magic Loop (AFK)_, and _Deep Fry_ switches
-  - _PiP Slide_ + image selector + `Pick` button (native file dialog)
+  - _PiP Slide_ + image selector + `Pick` button (native file dialog), and _PiP Flip_ mirror toggle
 
 ---
 

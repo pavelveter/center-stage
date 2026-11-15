@@ -396,7 +396,7 @@ class VideoPipeline(threading.Thread):
                             state["pip_corner"],
                             float(cfg["pip_scale"]),
                             float(cfg["pip_margin"]),
-                            content=self.state.pip_content,
+                            flip=bool(state["pip_flip"]),
                         )
 
                 cam.send(out_frame)
