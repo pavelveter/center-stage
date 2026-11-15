@@ -65,7 +65,6 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord )
     // coords
 	vec2 uvDraw = (2. * fragCoord - iResolution.xy) / iResolution.y;
     vec2 uv = fragCoord.xy / iResolution.xy;
-    uv.x = 1. - uv.x; // mirror
 
     // get texture color
 	vec4 color = texture(iChannel0, uv);
