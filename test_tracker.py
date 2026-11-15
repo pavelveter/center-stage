@@ -1860,15 +1860,16 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
             async with app.run_test(size=(100, 45)) as pilot:
                 await pilot.pause()
                 select = app.query_one("#shader-select", tui.Select)
-                self.assertTrue(select.disabled)
+                # The dropdown stays usable while the shader is off...
+                self.assertFalse(select.disabled)
                 self.assertTrue(app.shader_files)
 
-                # The h shortcut flips the switch and enables the dropdown.
+                # The h shortcut flips the switch (the dropdown was never
+                # locked).
                 await pilot.press("h")
                 await pilot.pause()
                 self.assertTrue(app.state.snapshot()["shader_enabled"])
                 self.assertTrue(app.query_one("#sw-shader", tui.Switch).value)
-                self.assertFalse(select.disabled)
 
                 # Picking a file updates the shared state.
                 select.value = app.shader_files[0]
@@ -1941,17 +1942,23 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
             cfg["lut_file"] = ""
             cfg["lut_enabled"] = False
             cfg["sharpen_enabled"] = False
+            cfg["pip_enabled"] = False
             app = tui.HyperStageApp(cfg, os.path.join(tempfile.mkdtemp(), "t.ini"))
             async with app.run_test(size=(100, 45)) as pilot:
                 await pilot.pause()
-                self.assertTrue(app.query_one("#lut-select", tui.Select).disabled)
+                # Dropdowns and Pick stay usable while their feature is off:
+                # an effect or image must be selectable before it is shown.
+                self.assertFalse(app.query_one("#lut-select", tui.Select).disabled)
+                self.assertFalse(app.query_one("#shader-select", tui.Select).disabled)
+                self.assertFalse(app.query_one("#pip-select", tui.Select).disabled)
+                self.assertFalse(app.query_one("#btn-pip-pick", tui.Button).disabled)
+                # Tuning rows stay bound to their feature switch.
                 self.assertTrue(app.query_one("#in-lutscale", tui.Input).disabled)
                 self.assertTrue(app.query_one("#in-sharpen", tui.Input).disabled)
 
                 await pilot.press("c")
                 await pilot.press("s")
                 await pilot.pause()
-                self.assertFalse(app.query_one("#lut-select", tui.Select).disabled)
                 self.assertFalse(app.query_one("#in-lutscale", tui.Input).disabled)
                 self.assertFalse(app.query_one("#in-sharpen", tui.Input).disabled)
 

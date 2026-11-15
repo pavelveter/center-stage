@@ -372,18 +372,14 @@ class HyperStageApp(App):
         self.query_one(f"#inc-{suffix}", Button).disabled = disabled
 
     def sync_dependent_controls(self) -> None:
-        """Enable each feature's controls only while that feature is on."""
+        """Dim each feature's tuning controls only while that feature is on.
+
+        Dropdowns and the PiP Pick button stay enabled with their feature
+        off: pre-selecting an effect or image before switching it on is the
+        whole point of keeping them separate from the toggle.
+        """
         values = self.state.snapshot()
-        lut_on = bool(values["lut_enabled"])
-        self.query_one("#lut-select", Select).disabled = not lut_on
-        self.set_tuning_disabled("lutscale", not lut_on)
-        self.query_one("#shader-select", Select).disabled = not bool(
-            values["shader_enabled"]
-        )
-        pip_on = bool(values["pip_enabled"])
-        self.query_one("#pip-select", Select).disabled = not pip_on
-        self.query_one("#btn-pip-pick", Button).disabled = not pip_on
-        self.query_one("#sw-pip-flip", Switch).disabled = not pip_on
+        self.set_tuning_disabled("lutscale", not bool(values["lut_enabled"]))
         self.set_tuning_disabled("sharpen", not bool(values["sharpen_enabled"]))
 
     def on_switch_changed(self, event: Switch.Changed) -> None:
