@@ -1349,9 +1349,12 @@ class TestVideoPipeline(unittest.TestCase):
         cfg = dict(DEFAULTS)
         cfg.update(out_w=160, out_h=90, tracking_enabled=False, pip_enabled=True)
         state = SharedState(cfg)
-        # A solid blue background, pre-fitted to the output size like the TUI
-        # worker would deliver it.
-        state.set_pip_frame(np.full((90, 160, 3), (255, 10, 10), dtype=np.uint8))
+        # An asymmetric blue/white background, pre-fitted to the output size
+        # like the TUI worker would deliver it: blue right half, white left.
+        background = np.zeros((90, 160, 3), dtype=np.uint8)
+        background[:, :80] = (255, 255, 255)
+        background[:, 80:] = (255, 10, 10)
+        state.set_pip_frame(background)
         pipeline = VideoPipeline(cfg, state)
         with (
             mock.patch("pipeline.ensure_model", return_value="fake"),
@@ -1369,12 +1372,20 @@ class TestVideoPipeline(unittest.TestCase):
                 if sent and state.telemetry()["fps"] > 0:
                     break
                 time.sleep(0.005)
+            unflipped = sent[0]
+            # Enabling PiP Flip mirrors the cached display background: the
+            # white half moves right on the next frame, without touching the
+            # stored one.
+            state.update(pip_flip=True)
+            sent.clear()
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and len(sent) < 3:
+                time.sleep(0.005)
             pipeline.stop()
             pipeline.join(2.0)
 
         self.assertFalse(pipeline.is_alive())
         self.assertGreaterEqual(len(sent), 1)
-        out = sent[0]
         x, y, w, h = pip_corner_rect(
             state.snapshot()["pip_corner"],
             cfg["pip_scale"],
@@ -1382,9 +1393,17 @@ class TestVideoPipeline(unittest.TestCase):
             160,
             90,
         )
-        # Center: slide background. Inside the corner window: live webcam.
-        self.assertEqual(tuple(out[45, 80]), (255, 10, 10))
-        self.assertEqual(tuple(out[y + h // 2, x + w // 2]), (0, 128, 0))
+        # Flip off: the white half is on the left, as stored...
+        self.assertEqual(tuple(unflipped[45, 40]), (255, 255, 255))
+        self.assertEqual(tuple(unflipped[45, 120]), (255, 10, 10))
+        # ...and the corner window holds the live webcam.
+        self.assertEqual(tuple(unflipped[y + h // 2, x + w // 2]), (0, 128, 0))
+        # Flip on: the published frame is mirrored...
+        flipped = sent[-1]
+        self.assertEqual(tuple(flipped[45, 120]), (255, 255, 255))
+        self.assertEqual(tuple(flipped[45, 40]), (255, 10, 10))
+        # ...and the stored background itself was never mutated.
+        self.assertEqual(tuple(background[45, 120]), (255, 10, 10))
 
     def test_magic_loop_replays_a_frozen_seamless_loop(self):
         import time
@@ -1613,30 +1632,24 @@ class TestPipMode(unittest.TestCase):
         self.assertEqual(tuple(out[0, 0]), (255, 255, 255))
         self.assertEqual(tuple(out[40, 40]), (255, 255, 255))
 
-    def test_compose_pip_flip_mirrors_the_background(self):
-        # Asymmetric background: white only on the left half. Flipping must
-        # put the white half on the right while the webcam window stays put.
+    def test_pip_flip_is_applied_by_the_pipeline_not_per_paste(self):
+        # compose_pip pastes the given background as-is; the mirror happens
+        # once in the pipeline when the image or the flip flag changes.
         background = np.zeros((100, 100, 3), dtype=np.uint8)
         background[:, :50] = 255
         webcam = np.zeros((10, 10, 3), dtype=np.uint8)
         webcam[:] = (0, 255, 0)
-        for flip, sample_x, expected in (
-            (False, 40, (255, 255, 255)),  # unflipped: white stays left
-            (True, 60, (255, 255, 255)),   # flipped: white moves right
-            (True, 40, (0, 0, 0)),         # ...and the left half goes black
-        ):
-            out = compose_pip(
-                np.zeros((100, 100, 3), np.uint8),
-                background,
-                webcam,
-                CORNER_TR,
-                0.25,
-                0.05,
-                flip=flip,
-            )
-            # Sample just left of the window (window spans x 70..94).
-            self.assertEqual(tuple(out[10, sample_x]), expected)
-            self.assertEqual(tuple(out[10, 80]), (0, 255, 0))
+        out = compose_pip(
+            np.zeros((100, 100, 3), np.uint8),
+            background,
+            webcam,
+            CORNER_TR,
+            0.25,
+            0.05,
+        )
+        # White half stays on the left; the window (x 70..94) holds the webcam.
+        self.assertEqual(tuple(out[10, 40]), (255, 255, 255))
+        self.assertEqual(tuple(out[10, 80]), (0, 255, 0))
 
     def test_pip_config_round_trips_through_ini(self):
         import os

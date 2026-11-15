@@ -170,6 +170,11 @@ class VideoPipeline(threading.Thread):
         magic_exit_fade = max(1, int(cfg["fps"] * MAGIC_LOOP_EXIT_FADE_SECONDS))
         magic_exit_left = 0
         magic_exit_player = None
+        # PiP background in its display orientation: re-mirrored only when the
+        # image or the flip flag changes, never per frame.
+        pip_display = None
+        pip_display_src = None
+        pip_flip_prev = None
 
         while not self._stop_event.is_set():
             try:
@@ -389,14 +394,20 @@ class VideoPipeline(threading.Thread):
                 if state["pip_enabled"]:
                     background = self.state.pip_frame
                     if background is not None:
+                        flip = bool(state["pip_flip"])
+                        if background is not pip_display_src or flip != pip_flip_prev:
+                            pip_display = (
+                                cv2.flip(background, 1) if flip else background
+                            )
+                            pip_display_src = background
+                            pip_flip_prev = flip
                         out_frame = compose_pip(
                             out_frame,
-                            background,
+                            pip_display,
                             out_frame,
                             state["pip_corner"],
                             float(cfg["pip_scale"]),
                             float(cfg["pip_margin"]),
-                            flip=bool(state["pip_flip"]),
                         )
 
                 cam.send(out_frame)

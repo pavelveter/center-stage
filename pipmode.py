@@ -95,21 +95,18 @@ def pip_corner_rect(corner, scale, margin, out_w, out_h):
     return x, y, w, h
 
 
-def compose_pip(canvas, background, webcam, corner, scale, margin, flip=False):
+def compose_pip(canvas, background, webcam, corner, scale, margin):
     """Background image plus the webcam window snapped into one corner.
 
-    background is a pre-fitted frame (see load_pip_image); it is copied, never
-    mutated, because SharedState shares it with the video thread. The webcam
-    frame is resized to the corner window size. flip mirrors the background
-    horizontally, undoing a mirror applied by the video-call app.
+    background is a pre-fitted, display-ready frame (see load_pip_image); it
+    is copied, never mutated, because SharedState shares it with the video
+    thread. The webcam frame is resized to the corner window size.
     """
     bg = background
     if bg.shape[:2] != canvas.shape[:2]:
         bg = cv2.resize(
             bg, (canvas.shape[1], canvas.shape[0]), interpolation=cv2.INTER_LINEAR
         )
-    if flip:
-        bg = cv2.flip(bg, 1)
     out = bg.copy()
     h, w = canvas.shape[:2]
     x, y, pw, ph = pip_corner_rect(corner, scale, margin, w, h)
