@@ -103,12 +103,13 @@ class HyperStageApp(App):
         Binding("p", "toggle_pip", "PiP", priority=True),
         Binding("r", "reload_files", "Reload", priority=True),
         # Arrow keys snap the PiP webcam window to the corners; each arrow
-        # points at its corner, clockwise from left. Not priority bindings:
-        # a focused Select or input keeps them for cursor movement.
-        Binding("left", "snap_corner(0)", show=False),
-        Binding("up", "snap_corner(1)", show=False),
-        Binding("down", "snap_corner(2)", show=False),
-        Binding("right", "snap_corner(3)", show=False),
+        # points at its corner, clockwise from left. Priority so a focused
+        # Select or input can never swallow them: corner snapping must work
+        # no matter what the user last clicked.
+        Binding("left", "snap_corner(0)", show=False, priority=True),
+        Binding("up", "snap_corner(1)", show=False, priority=True),
+        Binding("down", "snap_corner(2)", show=False, priority=True),
+        Binding("right", "snap_corner(3)", show=False, priority=True),
         # LUT cycling stays bound but is not shown in the footer.
         Binding("]", "next_lut", show=False, priority=True),
         Binding("[", "prev_lut", show=False, priority=True),
@@ -526,19 +527,19 @@ class HyperStageApp(App):
     @work(thread=True, exclusive=True, group="pip")
     def bake_pip_image(self, path: str) -> None:
         """Decode and letterbox-fit the image off the TUI thread."""
-        frame = load_pip_image(
+        frame, content = load_pip_image(
             path, (int(self.cfg["out_w"]), int(self.cfg["out_h"]))
         )
-        self.call_from_thread(self.pip_image_loaded, path, frame)
+        self.call_from_thread(self.pip_image_loaded, path, frame, content)
 
-    def pip_image_loaded(self, path: str, frame) -> None:
+    def pip_image_loaded(self, path: str, frame, content) -> None:
         """Apply a freshly decoded image, ignoring superseded selections."""
         if path != self.pip_request:
             return
         if frame is None:
             self.set_notice(f"PiP image failed: {os.path.basename(path)}")
             return
-        self.state.set_pip_frame(frame)
+        self.state.set_pip_frame(frame, content)
         self.set_notice(f"PiP image: {os.path.basename(path)}")
 
     def refresh_pip_files(self) -> None:

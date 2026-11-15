@@ -1350,8 +1350,10 @@ class TestVideoPipeline(unittest.TestCase):
         cfg.update(out_w=160, out_h=90, tracking_enabled=False, pip_enabled=True)
         state = SharedState(cfg)
         # A solid blue background, pre-fitted to the output size like the TUI
-        # worker would deliver it.
-        state.set_pip_frame(np.full((90, 160, 3), (255, 10, 10), dtype=np.uint8))
+        # worker would deliver it; the picture fills the whole frame.
+        state.set_pip_frame(
+            np.full((90, 160, 3), (255, 10, 10), dtype=np.uint8), (0, 0, 160, 90)
+        )
         pipeline = VideoPipeline(cfg, state)
         with (
             mock.patch("pipeline.ensure_model", return_value="fake"),
@@ -1584,7 +1586,7 @@ class TestPipMode(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "wide.png")
             cv2.imwrite(path, np.full((60, 120, 3), 200, dtype=np.uint8))
-            frame = load_pip_image(path, (100, 100))
+            frame, content = load_pip_image(path, (100, 100))
         self.assertIsNotNone(frame)
         self.assertEqual(frame.shape, (100, 100, 3))
         self.assertEqual(frame.dtype, np.uint8)
@@ -1592,16 +1594,30 @@ class TestPipMode(unittest.TestCase):
         self.assertEqual(int(frame[0, 50].max()), 0)
         self.assertEqual(int(frame[99, 50].max()), 0)
         self.assertEqual(int(frame[50, 50].max()), 200)
+        # The content rect points at the picture, not the black bars.
+        self.assertEqual(content, (0, 25, 100, 50))
 
     def test_load_pip_image_rejects_missing_and_unreadable(self):
-        self.assertIsNone(load_pip_image("", (64, 64)))
-        self.assertIsNone(load_pip_image("/no/such/file.png", (64, 64)))
+        self.assertEqual(load_pip_image("", (64, 64)), (None, None))
+        self.assertEqual(load_pip_image("/no/such/file.png", (64, 64)), (None, None))
 
     def test_corner_rect_places_the_window_with_margins(self):
         self.assertEqual(pip_corner_rect(CORNER_TL, 0.25, 0.05, 1920, 1080), (96, 54, 480, 270))
         self.assertEqual(pip_corner_rect(CORNER_TR, 0.25, 0.05, 1920, 1080), (1344, 54, 480, 270))
         self.assertEqual(pip_corner_rect(CORNER_BL, 0.25, 0.05, 1920, 1080), (96, 756, 480, 270))
         self.assertEqual(pip_corner_rect(CORNER_BR, 0.25, 0.05, 1920, 1080), (1344, 756, 480, 270))
+
+    def test_corner_rect_respects_letterboxed_picture_bounds(self):
+        # 4:3 slide in a 16:9 frame: picture spans x 240..1680, black bars
+        # elsewhere. The window must snap inside the picture with its margin
+        # measured from the picture's edges on every side.
+        bounds = (240, 0, 1440, 1080)
+        x, y, w, h = pip_corner_rect(CORNER_TR, 0.25, 0.05, 1920, 1080, bounds=bounds)
+        self.assertEqual((x, y, w, h), (1680 - 480 - 72, 54, 480, 270))
+        self.assertGreaterEqual(x, bounds[0])
+        self.assertLessEqual(x + w, bounds[0] + bounds[2])
+        x, y, w, h = pip_corner_rect(CORNER_BL, 0.25, 0.05, 1920, 1080, bounds=bounds)
+        self.assertEqual((x, y, w, h), (240 + 72, 1080 - 270 - 54, 480, 270))
 
     def test_compose_pip_pastes_webcam_into_the_background(self):
         background = np.full((100, 100, 3), 255, dtype=np.uint8)
@@ -1612,6 +1628,31 @@ class TestPipMode(unittest.TestCase):
         self.assertEqual(tuple(out[10, 10]), (0, 255, 0))
         self.assertEqual(tuple(out[0, 0]), (255, 255, 255))
         self.assertEqual(tuple(out[40, 40]), (255, 255, 255))
+
+    def test_compose_pip_keeps_margin_inside_the_picture(self):
+        # Letterboxed 4:3 background in a 100x100 frame: picture spans
+        # x 12..87. The top-right window must clear the picture's right edge.
+        background = np.zeros((100, 100, 3), dtype=np.uint8)
+        background[:, 12:88] = 255
+        webcam = np.zeros((10, 10, 3), dtype=np.uint8)
+        webcam[:] = (0, 255, 0)
+        out = compose_pip(
+            np.zeros((100, 100, 3), np.uint8),
+            background,
+            webcam,
+            CORNER_TR,
+            0.25,
+            0.05,
+            content=(12, 0, 76, 100),
+        )
+        # Window: 25x25 at x = 12 + 76 - 25 - round(76*0.05) = 59.
+        self.assertEqual(tuple(out[10, 59]), (0, 255, 0))
+        # 4px margin gap between the window (ends at 83) and the picture's
+        # right edge (87), then the black bar.
+        self.assertEqual(tuple(out[10, 86]), (255, 255, 255))
+        # No window pixels outside the picture.
+        self.assertEqual(int(out[:, 88:].sum()), 0)
+        self.assertEqual(int(out[:, :12].sum()), 0)
 
     def test_pip_config_round_trips_through_ini(self):
         import os
@@ -2175,6 +2216,14 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                     await pilot.press("з")
                     await pilot.pause()
                     self.assertTrue(app.state.snapshot()["pip_enabled"])
+
+                    # Arrows snap the corner even with the dropdown focused:
+                    # the bindings are priority, so no widget can swallow them.
+                    app.query_one("#pip-select", tui.Select).focus()
+                    await pilot.pause()
+                    await pilot.press("right")
+                    await pilot.pause()
+                    self.assertEqual(app.state.snapshot()["pip_corner"], 3)
         finally:
             tui.VideoPipeline = original
 

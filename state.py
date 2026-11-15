@@ -43,6 +43,7 @@ class SharedState:
         }
         self._lut_table = None
         self._pip_frame = None
+        self._pip_content = (0, 0, 0, 0)
         self._revision = 0
         self._saved_revision = 0
 
@@ -96,10 +97,17 @@ class SharedState:
         with self._lock:
             return self._pip_frame
 
-    def set_pip_frame(self, frame):
-        """Replace the active PiP background frame (cheap; consumes a reference)."""
+    @property
+    def pip_content(self):
+        """(x, y, w, h) of the actual picture inside the PiP background."""
+        with self._lock:
+            return self._pip_content
+
+    def set_pip_frame(self, frame, content=(0, 0, 0, 0)):
+        """Replace the active PiP background (cheap; consumes references)."""
         with self._lock:
             self._pip_frame = frame
+            self._pip_content = tuple(content)
 
     def pending_revision(self):
         """Revision to save, or None when everything is already persisted."""
