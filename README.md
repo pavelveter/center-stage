@@ -49,7 +49,7 @@ Click literally anything in the TUI (switches, dropdowns, `-`/`+` buttons, foote
 | `]` / `[` | `ъ` / `х` | Cycle next / previous `.cube` LUT                                      |
 | `>` / `<` | `ю` / `б` | Cycle next / previous `.glsl` shader                                   |
 | `←↑↓→`    | —         | Move the PiP window: up/down pick top/bottom, left/right pick the side |
-| `-` / `+` | —         | Previous / next PiP image (`1`–`0` jump to the first ten)              |
+| `-` / `+` | —         | Previous / next PiP image within its folder, stops at the ends (`1`–`0` jump to its first ten) |
 
 ---
 
@@ -68,7 +68,7 @@ Need to grab an iced oat latte or pet your cat mid-sync without anyone noticing?
 
 Presenting? Turn on **PiP Slide Mode** with `p` (or `з`):
 
-1. **Background:** Pick a slide or meme via the **Pick** button (native macOS file dialog) or the dropdown. Drop `.gif/.jpg/.jpeg/.png` files into the app directory and they appear in the dropdown automatically (or hit `r` to rescan instantly). `-`/`+` steps through the images and `1`–`0` jumps to the first ten; dropdown entries show each file's folder.
+1. **Background:** Pick a slide or meme via the **Pick** button (native macOS file dialog) or the dropdown. Drop `.gif/.jpg/.jpeg/.png` files into the app directory and they appear in the dropdown automatically (or hit `r` to rescan instantly). `-`/`+` steps through the images of the current folder (name-sorted, stops at the ends) and `1`–`0` jumps to its first ten; dropdown entries show each file's folder.
 2. **Tiny You:** The live webcam shrinks to 25% of the frame and parks 5% from the stream edges — arrows move it one axis at a time (`↑`/`↓` pick top/bottom, `←`/`→` pick left/right, the other axis stays put). Seeing your slide mirrored in the call? Flip on **PiP Flip** right below the toggle.
 3. **Grade the feed, not the slide:** LUTs, shaders and sharpening keep applying to your camera feed only; the background image stays pristine.
 

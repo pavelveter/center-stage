@@ -1595,6 +1595,12 @@ class TestPipMode(unittest.TestCase):
                 for name in ("MEME.JPG", "slide.png")
             ),
         )
+        # Sorted by name, ignoring case: meme.png before slide.png even
+        # though uppercase letters would sort first byte-wise.
+        self.assertEqual(
+            [os.path.basename(f) for f in files],
+            ["MEME.JPG", "slide.png"],
+        )
 
     def test_load_pip_image_letterboxes_to_output_size(self):
         import os
@@ -2256,18 +2262,38 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                         [folder_label + "meme.png", folder_label + "slide.png"],
                     )
 
-                    # +/- cycle the sorted images with wrap-around...
-                    await pilot.press("plus")
-                    await pilot.pause()
-                    self.assertEqual(app.state.snapshot()["pip_image"], second)
+                    # +/- step through the current folder's images and stop
+                    # at its ends instead of running into other folders...
                     await pilot.press("plus")
                     await pilot.pause()
                     self.assertEqual(app.state.snapshot()["pip_image"], image)
                     await pilot.press("minus")
                     await pilot.pause()
                     self.assertEqual(app.state.snapshot()["pip_image"], second)
+                    await pilot.press("minus")
+                    await pilot.pause()
+                    # ...already at the folder's first file: minus stays.
+                    self.assertEqual(app.state.snapshot()["pip_image"], second)
 
-                    # ...and digits jump to the first ten (2 -> second entry).
+                    # A file in another folder does not leak into the cycle:
+                    # with it selected, +/- has nothing to move to.
+                    sub = os.path.join(folder, "sub")
+                    os.mkdir(sub)
+                    other = os.path.join(sub, "other.png")
+                    cv2.imwrite(other, np.zeros((40, 60, 3), dtype=np.uint8))
+                    app.apply_pip_image(other)
+                    await pilot.pause()
+                    await pilot.press("plus")
+                    await pilot.pause()
+                    self.assertEqual(app.state.snapshot()["pip_image"], other)
+                    await pilot.press("minus")
+                    await pilot.pause()
+                    self.assertEqual(app.state.snapshot()["pip_image"], other)
+
+                    # ...and digits jump inside the current folder (2 ->
+                    # second entry of its folder).
+                    app.apply_pip_image(second)
+                    await pilot.pause()
                     await pilot.press("2")
                     await pilot.pause()
                     self.assertEqual(app.state.snapshot()["pip_image"], image)

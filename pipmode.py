@@ -51,7 +51,7 @@ def list_pip_files(primary_path):
         for name in os.listdir(folder):
             if is_image_file(name):
                 found.setdefault(os.path.abspath(os.path.join(folder, name)), None)
-    return sorted(found)
+    return sorted(found, key=str.lower)
 
 
 def load_pip_image(path, size):

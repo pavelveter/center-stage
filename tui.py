@@ -552,22 +552,40 @@ class HyperStageApp(App):
         self.cycle_pip_image(1)
 
     def action_pip_index(self, index: int) -> None:
-        if index < len(self.pip_files):
-            self.apply_pip_image(self.pip_files[index])
+        files = self.pip_folder_files()
+        if index < len(files):
+            self.apply_pip_image(files[index])
+
+    def pip_folder_files(self):
+        """Images from the current image's folder; all files when none picked.
+
+        Keeps -/+ and the digit jumps inside one directory instead of
+        running off into the app folder's images.
+        """
+        current = self.state.snapshot()["pip_image"]
+        if not current:
+            return self.pip_files
+        folder = os.path.dirname(current)
+        files = [p for p in self.pip_files if os.path.dirname(p) == folder]
+        return files or self.pip_files
 
     def cycle_pip_image(self, step: int) -> None:
-        """Select the previous (step=-1) or next (step=1) image, wrapping.
+        """Select the previous (step=-1) or next (step=1) image, clamped.
 
-        With no image selected yet, next picks the first file and prev the
-        last one. Works while PiP is off, like the dropdown and Pick.
+        Cycling stays inside the current image's folder and stops at its
+        first/last file (sorted by name). With no image selected yet, next
+        picks the first file and prev the last one. Works while PiP is
+        off, like the dropdown and Pick.
         """
-        if not self.pip_files:
-            self.set_notice("no PiP images found")
-            return
+        files = self.pip_folder_files()
         current = self.state.snapshot()["pip_image"]
-        index = self.pip_files.index(current) if current in self.pip_files else -1
-        index = (index + step) % len(self.pip_files)
-        self.apply_pip_image(self.pip_files[index])
+        index = (
+            files.index(current)
+            if current in files
+            else (-1 if step > 0 else len(files))
+        )
+        index = min(max(index + step, 0), len(files) - 1)
+        self.apply_pip_image(files[index])
 
     def apply_pip_image(self, path: str) -> None:
         """Validate, record and decode one image for the PiP background."""
@@ -680,7 +698,10 @@ class HyperStageApp(App):
         # A blank selection delivers the Select.NULL sentinel, not "".
         value = event.value if isinstance(event.value, str) else ""
         if event.select.id == "pip-select":
-            if value and value != self.state.snapshot()["pip_image"]:
+            # Compare against pip_request, not the state snapshot: a delayed
+            # Changed event from a programmatic select.value set would
+            # otherwise re-apply a superseded image over a newer choice.
+            if value and value != self.pip_request:
                 self.apply_pip_image(value)
             return
         if event.select.id == "shader-select":
