@@ -43,11 +43,6 @@ Screen {
     margin-right: 4;
 }
 
-.switch-spacer-small {
-    width: 2;
-    margin-right: 2;
-}
-
 .tuner-name {
     width: 9;
     color: $text-muted;

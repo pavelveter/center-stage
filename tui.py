@@ -238,10 +238,8 @@ class HyperStageApp(App):
             yield from self.switch_row("Deep Fry", "sw-fry", values)
 
             with Horizontal(classes="row"):
-                yield Label("PiP Slide / Flip", classes="name")
+                yield Label("PiP Slide", classes="name")
                 yield Switch(value=bool(values["pip_enabled"]), id="sw-pip")
-                # Little space and second switch for flip
-                yield Static("", classes="switch-spacer-small")
                 yield Label("Flip", classes="tuner-name")
                 yield Switch(value=bool(values["pip_flip"]), id="sw-pip-flip")
 
