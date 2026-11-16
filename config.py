@@ -144,6 +144,84 @@ INI_MAP = {
 }
 
 
+# Explanations written above every key by save_config, so the live ini stays
+# self-documenting through autosaves instead of losing comments on each write.
+SECTION_HELP = {
+    "camera": "Webcam device and the selfie-mirror of the published stream.",
+    "capture": "Camera capture and the resolution/fps of the virtual camera.",
+    "tracking": (
+        "Center Stage: pan and zoom are independent controllers. Times are in "
+        "seconds, deadbands are fractions of the frame."
+    ),
+    "color": "LUT grading and GLSL shaders (applied to the camera, not the PiP image).",
+    "sharpen": "Edge-gated unsharp mask applied to the camera feed.",
+    "effects": "Time Loop / Deep Fry / Magic Loop (AFK) toggles.",
+    "pip": "Picture-in-Picture slide/meme background and its webcam window.",
+    "appearance": "TUI theme (change it with Ctrl+P -> theme).",
+    "text": "Centered gradient caption published in the TUI text field.",
+}
+
+KEY_HELP = {
+    ("camera", "index"): "AVFoundation camera index; run --list-cameras to see options.",
+    ("camera", "flip"): "Mirror the whole feed horizontally (selfie view).",
+    ("capture", "in_width"): "Requested capture width; the camera may negotiate a different one.",
+    ("capture", "in_height"): "Requested capture height; detection always runs on a 640x360 copy.",
+    ("capture", "out_width"): "Virtual camera output width.",
+    ("capture", "out_height"): "Virtual camera output height; crop keeps this aspect ratio.",
+    ("capture", "fps"): "Capture and virtual-camera frame rate.",
+    ("tracking", "enabled"): "Master switch for face tracking (hotkey t / е).",
+    ("tracking", "zoom"): "Base/max zoom factor; the controller never exceeds it. TUI: Zoom tuner.",
+    ("tracking", "smoothing"): "LEGACY EMA alpha, migrated to position_response_time on load.",
+    ("tracking", "deadzone"): "LEGACY pan deadzone, migrated to position_deadband on load.",
+    ("tracking", "min_detection_confidence"): "MediaPipe detector confidence floor (0..1).",
+    ("tracking", "detect_every"): "Run inference every Nth frame (6 = ~5 detections/s at 30 fps).",
+    ("tracking", "max_head_height"): "Head may occupy at most this fraction of the output height.",
+    ("tracking", "head_ratio"): "Full head / detected face bbox height; maps face size to framing.",
+    ("tracking", "zoom_response_time"): "LEGACY spring time, migrated to zoom_in/out_response_time.",
+    ("tracking", "zoom_damping_ratio"): "LEGACY spring damping; kept for old configs, unused now.",
+    ("tracking", "position_response_time"): "Pan spring response time: larger = slower, calmer pan. TUI: Position Response.",
+    ("tracking", "position_damping"): "Pan damping (>=1 means no overshoot / oscillation).",
+    ("tracking", "position_deadband"): "Ignore face-center moves below this fraction of the frame (0.01 = 1%).",
+    ("tracking", "zoom_in_response_time"): "Time constant for zoom-in: deliberately slow to avoid breathing.",
+    ("tracking", "zoom_out_response_time"): "Time constant for zoom-out: faster, keeps subject in frame.",
+    ("tracking", "zoom_measurement_smoothing"): "Low-pass time constant for the filtered face-size measurement.",
+    ("tracking", "zoom_deadzone"): "Relative hysteresis on the zoom target (0.05 = 5%).",
+    ("tracking", "detection_timeout"): "After this long without a detection, ease back to default framing.",
+    ("tracking", "max_measurement_change"): "Reject face-size changes faster than this fraction per second.",
+    ("tracking", "debug"): "Publish raw/filtered center/size, zoom, age, velocity in telemetry.",
+    ("color", "lut_enabled"): "Apply the .cube LUT (hotkey c / с).",
+    ("color", "lut_file"): "Path to the .cube file (relative to this ini is fine).",
+    ("color", "lut_scale"): "LUT downscale factor: higher = faster but softer grading.",
+    ("color", "lut_detail"): "Upscale only the color delta to keep fine detail.",
+    ("color", "shader_enabled"): "Apply the GLSL shader pack (hotkey h / р).",
+    ("color", "shader_file"): "Path to a single .glsl or a shader pack directory.",
+    ("sharpen", "enabled"): "Edge-aware sharpening (hotkey s / ы).",
+    ("sharpen", "strength"): "Unsharp-mask amount (0..1 looks natural).",
+    ("sharpen", "threshold"): "Minimum local contrast before sharpening kicks in.",
+    ("sharpen", "sigma"): "Gaussian radius of the high-pass filter.",
+    ("effects", "time_loop"): "Replay the last second of processed video (hotkey l / д).",
+    ("effects", "deep_fry"): "High-contrast saturation + RGB channel roll (hotkey f / а).",
+    ("effects", "magic_loop"): "AFK: freeze framing and loop pre-recorded video (hotkey m / ь).",
+    ("pip", "enabled"): "PiP slide/meme mode (hotkey p / з).",
+    ("pip", "image"): "Background image path; Pick button or dropdown in the TUI.",
+    ("pip", "flip"): "Mirror the background image horizontally.",
+    ("pip", "scale"): "Webcam window size as a fraction of the output frame (0.25 = 25%).",
+    ("pip", "padding"): "Equal pixel gap from every screen edge to the webcam window.",
+    ("pip", "animation"): "Zoom transition duration in seconds when PiP toggles (0 = instant).",
+    ("pip", "corner"): "Default corner: 0 TL, 1 TR, 2 BL, 3 BR; arrows move it live.",
+    ("pip", "margin"): "IGNORED legacy key (replaced by padding); safe to delete.",
+    ("appearance", "theme"): "Textual theme name.",
+    ("text", "enabled"): "Draw the centered text overlay; Enter in the input turns it on.",
+    ("text", "text"): "Published caption (persisted from the TUI input).",
+    ("text", "font_face"): "TTF name or absolute path; 'Nothing Font C' resolves from ~/Library/Fonts.",
+    ("text", "font_scale"): "Base font scale (1.0 = 32px); long lines shrink to fit.",
+    ("text", "thickness"): "Text stroke width in pixels.",
+    ("text", "padding"): "Minimum gap in pixels from the frame's left/right edges.",
+    ("text", "color_start"): "Gradient start color at the left edge, #RRGGBB.",
+    ("text", "color_end"): "Gradient end color at the right edge, #RRGGBB.",
+}
+
+
 def load_config(path):
     """Load an INI file into a flat dict of settings.
 
@@ -272,8 +350,17 @@ def save_config(path, cfg):
     try:
         with os.fdopen(fd, "w") as f:
             f.write("; Hyper Stage configuration.\n")
-            f.write("; Updated automatically when settings change in the TUI.\n\n")
-            parser.write(f)
+            f.write("; Comments are written on every autosave; edit values freely.\n")
+            for section in parser.sections():
+                f.write("\n")
+                if section in SECTION_HELP:
+                    f.write(f"; {SECTION_HELP[section]}\n")
+                f.write(f"[{section}]\n")
+                for key, value in parser.items(section, raw=True):
+                    help_text = KEY_HELP.get((section, key))
+                    if help_text:
+                        f.write(f"; {help_text}\n")
+                    f.write(f"{key} = {value}\n")
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, path)

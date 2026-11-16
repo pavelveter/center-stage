@@ -128,7 +128,7 @@ detection age and confidence in the telemetry panel.
 
 ## 💻 CLI Flags & Config
 
-Everything you tweak in the UI atomically auto-saves to `hyper-stage.ini` every 5 seconds. Want to launch straight into chaos from the terminal? We got flags:
+Everything you tweak in the UI atomically auto-saves to `hyper-stage.ini` every 5 seconds. The file is self-documenting: every section and key carries a comment that survives autosaves. Want to launch straight into chaos from the terminal? We got flags:
 
 ```sh
 uv run main.py --list-cameras

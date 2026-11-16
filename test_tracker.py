@@ -543,6 +543,14 @@ class TestSaveConfig(unittest.TestCase):
             self.assertEqual(
                 [n for n in os.listdir(folder) if n.startswith(".hyper-stage-")], []
             )
+            with open(path) as saved:
+                text = saved.read()
+            self.assertIn("; AVFoundation camera index", text)
+            self.assertIn("[custom]", text)
+            # Comments survive a second autosave.
+            save_config(path, cfg)
+            with open(path) as saved_again:
+                self.assertEqual(saved_again.read(), text)
 
     def test_effects_section_is_loaded(self):
         import os
