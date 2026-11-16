@@ -87,15 +87,14 @@ Scale, edge padding (pixels), zoom animation duration and default corner live in
 
 ## 🛠️ Dashboard Anatomy
 
-The TUI keeps things clean in a centered 72-column layout:
+The TUI keeps things clean in a centered 74-column layout:
 
 - **TELEMETRY:** Live FPS, current zoom multiplier, `TRACKING` / `IDLE` status, active virtual camera device, and status notifications.
 - **CONTROLS:**
-  - _Face Tracking_ + `Zoom` spring tuner
-  - _Face Tracking_ switch
+  - _Face Tracking_ switch + `Zoom` tuner
   - _Flip Camera_ switch (mirror the whole feed, selfie-style)
   - _Text Overlay_ switch + text field (`i` / `ш` to focus, Enter to publish) with `[text]` ini settings (font, scale, thickness, edge padding, gradient colors)
-  - _Pan Smoothing_ EMA tuner
+  - _Position Response_ tuner (pan spring time; zoom is deliberately slower)
   - _LUT Grading_ + `Scale` tuner + `.cube` selector
   - _GLSL Shader_ + `.glsl` selector
   - _Smart Sharpen_ + `Strength` tuner (edge-gated so you don't look deep-fried unless you want to)
@@ -107,6 +106,23 @@ The TUI keeps things clean in a centered 72-column layout:
 ## 🔤 Text Overlay
 
 The `[text]` section of `hyper-stage.ini` controls the centered caption: `enabled`, `text` (the published line, persisted on autosave), `font_face` (TTF name or path, e.g. `Nothing Font C`), `font_scale`, `thickness`, `padding` (minimum gap from the frame edges) and a `color_start` → `color_end` `#RRGGBB` gradient. Type in the TUI text field (`i` / `ш`) and hit Enter to publish it. Long text automatically shrinks to fit the safe zone.
+
+---
+
+## 🎯 Tracking & Zoom Tuning
+
+`[tracking]` in `hyper-stage.ini` has two independent controllers. Pan uses
+`position_response_time` (seconds, default `0.7`), `position_damping` (`1.0`,
+no overshoot) and `position_deadband` (`0.01` of the frame) — small head
+movements never re-arm it. Zoom filters the face size from the detector's eye
+landmarks (`face_size`, falling back to bbox height when landmarks are absent)
+and uses `zoom_measurement_smoothing`, `zoom_deadzone`, separate
+`zoom_in_response_time` (`4.0s`, slow) and `zoom_out_response_time` (`1.0s`,
+responsive), `detection_timeout` (`0.5s`) and `max_measurement_change`
+(`0.6`/s). The old `smoothing`, `deadzone`, `zoom_response_time` and
+`zoom_damping_ratio` keys are still read and converted on load. Set
+`debug = true` to publish raw/filtered center and size, desired/actual zoom,
+detection age and confidence in the telemetry panel.
 
 ---
 

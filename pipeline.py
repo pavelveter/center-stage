@@ -7,7 +7,6 @@ The video pipeline runs in a daemon thread while tui.py renders a Textual
 control panel. Settings come from an INI file (see hyper-stage.ini), can be
 changed live in the TUI, and are written back when they change.
 """
-import math
 import threading
 import time
 
@@ -34,14 +33,14 @@ from tracking import (
     DETECT_H,
     DETECT_W,
     MODEL_PATH,
+    PositionController,
+    ZoomController,
     crop_origin,
     ensure_model,
-    face_centers,
-    fit_zoom,
-    largest_face_height,
-    pick_target_zoom,
+    face_size,
+    pick_subject,
     quiet_native_stderr,
-    spring_step,
+    subject_center,
 )
 
 
@@ -140,19 +139,11 @@ class VideoPipeline(threading.Thread):
         """Frame loop; returns when stopped, when the camera dies, or on a fault."""
         cfg = self.cfg
         out_w, out_h = cfg["out_w"], cfg["out_h"]
-        dt = 1.0 / max(1.0, float(cfg["fps"]))
-        omega = 2.0 * math.pi / max(0.05, float(cfg["zoom_response_time"]))
-        zeta = max(0.1, float(cfg["zoom_damping_ratio"]))
         detect_every = max(1, int(cfg["detect_every"]))
-        deadzone = float(cfg["deadzone"])
-        zoom_deadzone = float(cfg["zoom_deadzone"])
-        max_head = float(cfg["max_head_height"])
-        head_ratio = float(cfg["head_ratio"])
 
-        curr_x, curr_y = 0.5, 0.45
-        target_x, target_y = curr_x, curr_y
-        curr_zoom = target_zoom = max(1.0, float(cfg["zoom"]))
-        zoom_vel = 0.0
+        position = PositionController()
+        zoom_ctrl = ZoomController(max(1.0, float(cfg["zoom"])))
+        last_capture = time.monotonic()
         frame_idx = 0
         consecutive_errors = 0
         fps_ema = 0.0
@@ -204,6 +195,9 @@ class VideoPipeline(threading.Thread):
                         return
                     continue
                 frame = np.ascontiguousarray(frame)
+                captured = time.monotonic()
+                dt_frame = max(1e-4, min(0.5, captured - last_capture))
+                last_capture = captured
                 consecutive_errors = 0
                 state = self.state.snapshot()
                 if state["cam_flip"]:
@@ -223,8 +217,9 @@ class VideoPipeline(threading.Thread):
                         if state["tracking_enabled"]:
                             self.state.update(tracking_enabled=False)
                             state["tracking_enabled"] = False
-                        magic_frozen = (curr_x, curr_y, curr_zoom)
-                        zoom_vel = 0.0
+                        magic_frozen = (position.x, position.y, zoom_ctrl.value)
+                        position.relax()
+                        zoom_ctrl.relax()
                         # Only footage from before the person reached for the
                         # key may be used; what comes after is not trusted.
                         magic_mark = magic_loop.count - magic_guard
@@ -277,61 +272,87 @@ class VideoPipeline(threading.Thread):
                 elif loop_covers_live:
                     out_frame = None
                 else:
+                    curr_x, curr_y = position.x, position.y
+                    curr_zoom = zoom_ctrl.value
                     if magic_on:
                         # Magic Loop holds the crop exactly as frozen at the
                         # key press: no detection, no pan, no zoom spring.
                         self.state.set_telemetry(tracking=False)
                     else:
                         if not state["tracking_enabled"]:
-                            # Disabled: ease the view back to the base framing.
-                            target_x, target_y, target_zoom = 0.5, 0.45, base_zoom
+                            # Tracking off: let both controllers ease home.
+                            position.relax()
+                            zoom_ctrl.relax()
                             self.state.set_telemetry(tracking=False)
                         elif frame_idx % detect_every == 0:
                             small = cv2.resize(frame, (DETECT_W, DETECT_H))
                             rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
                             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
                             result = detector.detect(mp_image)
-                            centers = face_centers(result.detections, DETECT_W, DETECT_H)
-                            if centers:
-                                tx = sum(c[0] for c in centers) / len(centers)
-                                ty = sum(c[1] for c in centers) / len(centers)
-                                if abs(tx - curr_x) > deadzone:
-                                    target_x = tx
-                                if abs(ty - curr_y) > deadzone:
-                                    target_y = ty
-                                wanted = fit_zoom(
-                                    largest_face_height(result.detections, DETECT_H),
-                                    base_zoom,
-                                    max_head,
-                                    head_ratio,
+                            # One subject for both controllers: averaging all
+                            # faces for pan while zooming to the largest one
+                            # made two different people fight over the frame.
+                            subject = pick_subject(result.detections)
+                            if subject is not None:
+                                cx, cy = subject_center(subject, DETECT_W, DETECT_H)
+                                categories = getattr(subject, "categories", None) or []
+                                confidence = max(
+                                    (getattr(c, "score", 0.0) or 0.0 for c in categories),
+                                    default=0.0,
                                 )
-                                target_zoom = pick_target_zoom(
-                                    target_zoom, wanted, zoom_deadzone
+                                # The timestamp belongs to the captured frame,
+                                # not to the moment inference happened to end.
+                                position.observe(
+                                    cx, cy, captured,
+                                    float(state["position_deadband"]), confidence,
                                 )
-                            self.state.set_telemetry(tracking=bool(centers))
+                                zoom_ctrl.observe(
+                                    face_size(subject, DETECT_W, DETECT_H),
+                                    captured,
+                                    float(state["zoom_measurement_smoothing"]),
+                                    float(state["max_measurement_change"]),
+                                    confidence,
+                                )
+                            self.state.set_telemetry(tracking=subject is not None)
 
-                        # Exponential moving average smooths panning even though
-                        # detection only updates every detect_every frames.
-                        smoothing = float(state["smoothing"])
-                        curr_x += (target_x - curr_x) * smoothing
-                        curr_y += (target_y - curr_y) * smoothing
-
-                        # Dolly zoom: damped spring, then clamped to the valid range.
-                        curr_zoom, zoom_vel = spring_step(
-                            curr_zoom,
-                            zoom_vel,
-                            max(1.0, min(base_zoom, target_zoom)),
-                            omega,
-                            zeta,
-                            dt,
+                        now_ctrl = time.monotonic()
+                        timeout = float(state["detection_timeout"])
+                        curr_x, curr_y = position.step(
+                            dt_frame, now_ctrl,
+                            float(state["position_response_time"]),
+                            float(state["position_damping"]), timeout,
                         )
-                        curr_zoom = max(1.0, min(base_zoom, curr_zoom))
+                        curr_zoom = zoom_ctrl.step(
+                            dt_frame, now_ctrl, base_zoom,
+                            float(cfg["max_head_height"]), float(cfg["head_ratio"]),
+                            float(state["zoom_deadzone"]),
+                            float(state["zoom_in_response_time"]),
+                            float(state["zoom_out_response_time"]), timeout,
+                        )
+                        if cfg["tracking_debug"]:
+                            self.state.set_telemetry(
+                                raw_center=(position.raw_x, position.raw_y),
+                                filtered_center=(position.x, position.y),
+                                raw_height=zoom_ctrl.raw_size,
+                                filtered_height=zoom_ctrl.filtered_size,
+                                desired_zoom=zoom_ctrl.desired,
+                                actual_zoom=zoom_ctrl.value,
+                                detection_age=now_ctrl - max(
+                                    position.last_detection, zoom_ctrl.last_detection
+                                ),
+                                confidence=position.confidence,
+                                pos_velocity=(position.vx, position.vy),
+                                tracking_state=(
+                                    "detected" if now_ctrl - position.last_detection <= timeout
+                                    else "lost"
+                                ),
+                            )
 
                     # Use actual frame dimensions: the camera may negotiate a
                     # different resolution than requested.
                     fh, fw = frame.shape[:2]
                     x1, y1, crop_w, crop_h = crop_origin(
-                        curr_x, curr_y, curr_zoom, fw, fh
+                        curr_x, curr_y, curr_zoom, fw, fh, out_w, out_h
                     )
                     cropped = frame[y1 : y1 + crop_h, x1 : x1 + crop_w]
                     if crop_w < 1 or crop_h < 1 or cropped.size == 0:

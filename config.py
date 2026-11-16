@@ -1,6 +1,7 @@
 """Configuration: defaults, INI mapping, load/save and path resolution."""
 
 import configparser
+import math
 import os
 import tempfile
 
@@ -28,11 +29,20 @@ DEFAULTS = {
     "zoom": 1.5,                # base crop factor (higher = tighter framing)
     "max_head_height": 0.667,   # max head height as a fraction of frame height
     "head_ratio": 1.35,         # full head / face detector bbox
-    "zoom_response_time": 0.9,  # spring response time (s); higher = smoother zoom
-    "zoom_damping_ratio": 1.0,  # 1.0 = critically damped (no overshoot)
-    "zoom_deadzone": 0.05,      # hysteresis on zoom-in, fraction
-    "smoothing": 0.08,          # EMA alpha for pan (lower = smoother, more lag)
-    "deadzone": 0.04,           # ignore pan motion smaller than this fraction
+    "zoom_response_time": 0.9,  # legacy: migrated to zoom_in/out response times
+    "zoom_damping_ratio": 1.0,  # legacy: kept for config compatibility
+    "zoom_deadzone": 0.05,      # relative hysteresis on the zoom target
+    "position_response_time": 0.7,  # spring response time for pan (seconds)
+    "position_damping": 1.0,    # >=1 prevents pan overshoot
+    "position_deadband": 0.01,  # ignore center changes below 1% of the frame
+    "zoom_in_response_time": 4.0,   # slow, deliberate zoom-in (seconds)
+    "zoom_out_response_time": 1.0,  # responsive zoom-out (seconds)
+    "zoom_measurement_smoothing": 0.6,  # time constant for face-size EMA (s)
+    "detection_timeout": 0.5,   # seconds before easing to default framing
+    "max_measurement_change": 0.6,  # max face-size change per second
+    "tracking_debug": False,    # publish extra tracking telemetry
+    "smoothing": 0.08,          # legacy EMA alpha (migrated on load)
+    "deadzone": 0.04,           # legacy pan deadzone (migrated on load)
     "min_det_conf": 0.6,        # MediaPipe face-detection confidence floor
     "detect_every": 3,          # run detection every N frames (CPU vs latency)
     "lut_enabled": True,        # toggle color grading at runtime
@@ -80,6 +90,15 @@ INI_MAP = {
         "zoom_damping_ratio": "zoom_damping_ratio",
         "zoom_deadzone": "zoom_deadzone",
         "deadzone": "deadzone",
+        "position_response_time": "position_response_time",
+        "position_damping": "position_damping",
+        "position_deadband": "position_deadband",
+        "zoom_in_response_time": "zoom_in_response_time",
+        "zoom_out_response_time": "zoom_out_response_time",
+        "zoom_measurement_smoothing": "zoom_measurement_smoothing",
+        "detection_timeout": "detection_timeout",
+        "max_measurement_change": "max_measurement_change",
+        "debug": "tracking_debug",
         "min_detection_confidence": "min_det_conf",
         "detect_every": "detect_every",
     },
@@ -161,7 +180,44 @@ def load_config(path):
                         print(
                             f"warning: invalid value for {section}.{ini_key}={raw!r}; using default {default}"
                         )
+    _migrate_tracking_settings(parser, cfg)
     return cfg
+
+
+def _migrate_tracking_settings(parser, cfg):
+    """Map old tracking keys onto the new controllers when no new key is set.
+
+    Old configs keep working: an EMA alpha is converted to an equivalent
+    response time at the configured FPS, and the old single zoom spring time
+    seeds the new asymmetric in/out times. Explicit new values always win.
+    """
+    if not parser.has_section("tracking"):
+        return
+    has = lambda key: parser.has_option("tracking", key)
+
+    def number(key):
+        raw = parser.get("tracking", key).strip()
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
+    if has("smoothing") and not has("position_response_time"):
+        alpha = number("smoothing")
+        if alpha is not None and 0.0 < alpha < 1.0:
+            fps = max(1.0, cfg["fps"])
+            cfg["position_response_time"] = min(
+                4.0, max(0.2, -1.0 / fps / math.log(1.0 - alpha))
+            )
+    if has("deadzone") and not has("position_deadband"):
+        deadband = number("deadzone")
+        if deadband is not None:
+            cfg["position_deadband"] = min(0.1, max(0.002, deadband))
+    if has("zoom_response_time") and not has("zoom_in_response_time"):
+        old = number("zoom_response_time")
+        if old is not None:
+            cfg["zoom_out_response_time"] = min(4.0, max(0.3, old * 2.0))
+            cfg["zoom_in_response_time"] = min(12.0, max(1.0, old * 8.0))
 
 
 def ini_value(value):

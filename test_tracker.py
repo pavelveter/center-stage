@@ -1,3 +1,4 @@
+import types
 import unittest
 
 from cli import *  # noqa: F401,F403
@@ -65,6 +66,146 @@ class TestTextOverlay(unittest.TestCase):
         self.assertFalse(clean.any())
 
 
+class TestControllers(unittest.TestCase):
+    @staticmethod
+    def make_detection(cx, cy, height, eye=None, score=0.9):
+        det_w, det_h = DETECT_W, DETECT_H
+        aspect = det_w / det_h
+        w = height * det_h / aspect
+        bb = types.SimpleNamespace(
+            origin_x=(cx - w / 2) * det_w,
+            origin_y=(cy - height * 0.6) * det_h,
+            width=w * det_w,
+            height=height * det_h,
+        )
+        kps = None
+        if eye is not None:
+            dx = eye / 2.8 / aspect  # eye distance expressed as height units
+            kps = [
+                types.SimpleNamespace(x=cx - dx, y=cy),
+                types.SimpleNamespace(x=cx + dx, y=cy),
+            ]
+        return types.SimpleNamespace(
+            bounding_box=bb, keypoints=kps,
+            categories=[types.SimpleNamespace(score=score)],
+        )
+
+    @staticmethod
+    def cfg(**overrides):
+        cfg = dict(DEFAULTS)
+        cfg.update(overrides)
+        return cfg
+
+    def test_small_position_oscillation_does_not_wander(self):
+        ctrl = PositionController()
+        cfg = self.cfg()
+        now = 0.0
+        for i in range(180):  # 6 seconds at 30 fps, detection every 6 frames
+            if i % 6 == 0:
+                x = 0.5 + 0.012 * (-1) ** (i // 6)
+                ctrl.observe(x, 0.45, now, cfg["position_deadband"])
+            ctrl.step(1 / 30, now, cfg["position_response_time"],
+                      cfg["position_damping"], cfg["detection_timeout"])
+            now += 1 / 30
+            self.assertAlmostEqual(ctrl.x, 0.5, delta=0.01)
+            self.assertAlmostEqual(ctrl.y, 0.45, delta=0.01)
+
+    def test_slow_and_sudden_position_moves_converge_without_overshoot(self):
+        cfg = self.cfg()
+        for speed in ("slow", "jump"):
+            ctrl = PositionController()
+            now = 0.0
+            for i in range(240):
+                target = min(0.8, 0.5 + (i / 240) * 0.3) if speed == "slow" else 0.8
+                ctrl.observe(target, 0.45, now, cfg["position_deadband"])
+                ctrl.step(1 / 30, now, cfg["position_response_time"],
+                          cfg["position_damping"], cfg["detection_timeout"])
+                now += 1 / 30
+                self.assertLessEqual(ctrl.x, 0.8 + 1e-9)  # no overshoot
+            # A slow ramp legitimately lags a spring by a few percent.
+            self.assertAlmostEqual(ctrl.x, 0.8, delta=0.04 if speed == "slow" else 0.01)
+
+    def test_position_frame_rate_independent(self):
+        cfg = self.cfg()
+        finals = []
+        for fps in (15, 30, 60):
+            ctrl = PositionController()
+            for i in range(fps * 3):
+                now = i / fps
+                ctrl.observe(0.7, 0.45, now, cfg["position_deadband"])
+                ctrl.step(1 / fps, now, cfg["position_response_time"],
+                          cfg["position_damping"], cfg["detection_timeout"])
+            finals.append(ctrl.x)
+        self.assertLess(max(finals) - min(finals), 0.005)
+
+    def test_zoom_ignores_head_rotation_when_landmarks_stable(self):
+        cfg = self.cfg()
+
+        def run(rotating):
+            z = ZoomController(1.25)
+            now = 0.0
+            for i in range(180):
+                if i % 6 == 0:
+                    # Bbox swings +-20% while the eyes (distance proxy) stay.
+                    height = 0.32 * (1 + 0.2 * (-1) ** (i // 6)) if rotating else 0.32
+                    d = self.make_detection(0.5, 0.45, height, eye=0.32 / 2.8)
+                    z.observe(face_size(d, DETECT_W, DETECT_H), now,
+                              cfg["zoom_measurement_smoothing"],
+                              cfg["max_measurement_change"])
+                z.step(1 / 30, now, 1.5, cfg["max_head_height"], cfg["head_ratio"],
+                       cfg["zoom_deadzone"], cfg["zoom_in_response_time"],
+                       cfg["zoom_out_response_time"], cfg["detection_timeout"])
+                now += 1 / 30
+            return z.value
+
+        self.assertLess(abs(run(True) - run(False)), 0.005)
+
+    def test_zoom_small_changes_ignored_and_outliers_rejected(self):
+        cfg = self.cfg()
+        z = ZoomController(1.25)
+        z.observe(0.4, 0.0, cfg["zoom_measurement_smoothing"],
+                  cfg["max_measurement_change"])
+        z.observe(0.405, 0.2, cfg["zoom_measurement_smoothing"],
+                  cfg["max_measurement_change"])
+        self.assertLess(abs(z.filtered_size - 0.4), 0.01)
+        z.observe(0.05, 0.21, cfg["zoom_measurement_smoothing"],
+                  cfg["max_measurement_change"])
+        self.assertGreater(z.filtered_size, 0.3)  # implausible jump limited
+
+    def test_zoom_asymmetric_response_and_recovery(self):
+        cfg = self.cfg()
+        t_in, t_out = cfg["zoom_in_response_time"], cfg["zoom_out_response_time"]
+        self.assertGreater(t_in, t_out * 2)
+        z = ZoomController(1.0)
+        # Same target step in each direction; a huge deadband freezes the
+        # accepted target so only the asymmetric time constants are measured.
+        z.target = 1.5
+        z.step(1.0, 1.0, 2.0, cfg["max_head_height"], cfg["head_ratio"], 10.0,
+               t_in, t_out, cfg["detection_timeout"])
+        rise = z.value - 1.0
+        z = ZoomController(2.0)
+        z.target = 1.5
+        z.step(1.0, 1.0, 2.0, cfg["max_head_height"], cfg["head_ratio"], 10.0,
+               t_in, t_out, cfg["detection_timeout"])
+        fall = 2.0 - z.value
+        self.assertGreater(fall, rise * 2)
+
+        # Missing detections keep the state and ease toward base, no jump.
+        z = ZoomController(1.5)
+        z.observe(0.4, 0.0, cfg["zoom_measurement_smoothing"],
+                  cfg["max_measurement_change"])
+        before = z.value
+        z.step(1 / 30, 5.0, 1.2, cfg["max_head_height"], cfg["head_ratio"],
+               cfg["zoom_deadzone"], t_in, t_out, cfg["detection_timeout"])
+        self.assertLess(abs(z.value - before), 0.05)
+
+    def test_subject_selection_is_consistent(self):
+        big = self.make_detection(0.3, 0.4, 0.4, score=0.7)
+        small = self.make_detection(0.7, 0.6, 0.25, score=0.99)
+        self.assertIs(pick_subject([small, big]), big)
+        self.assertIsNone(pick_subject([]))
+
+
 class TestCropOrigin(unittest.TestCase):
     def test_centered(self):
         x1, y1, cw, ch = crop_origin(0.5, 0.5, 2.0, 1000, 1000)
@@ -82,6 +223,38 @@ class TestCropOrigin(unittest.TestCase):
         x1, y1, cw, ch = crop_origin(1.0, 1.0, 2.0, 1000, 1000)
         self.assertEqual(x1, 500)
         self.assertEqual(y1, 500)
+
+
+    def test_output_aspect_never_distorts_portrait_input(self):
+        # Portrait camera, landscape virtual camera: crop must match the
+        # output aspect so the final resize does not stretch the picture.
+        x, y, w, h = crop_origin(0.5, 0.45, 1.5, 1080, 1920, 1920, 1080)
+        self.assertEqual(w / h, 1920 / 1080)
+        self.assertLessEqual(w, 1080)
+        self.assertLessEqual(h, 1920)
+        self.assertTrue(0 <= x <= 1080 - w and 0 <= y <= 1920 - h)
+        # Backward-compatible call keeps the input aspect.
+        x, y, w, h = crop_origin(0.5, 0.5, 2.0, 1080, 1920)
+        self.assertEqual((w, h), (540, 960))
+
+    def test_min_max_zoom_stays_inside_the_frame(self):
+        for zoom in (1.0, 1.25, 4.0, 100.0):
+            x, y, w, h = crop_origin(1.0, 1.0, zoom, 640, 480, 1920, 1080)
+            self.assertGreaterEqual(x, 0)
+            self.assertGreaterEqual(y, 0)
+            self.assertLessEqual(x + w, 640)
+            self.assertLessEqual(y + h, 480)
+            self.assertGreater(w, 0)
+            self.assertGreater(h, 0)
+
+    def test_crop_uses_mirrored_coordinates(self):
+        # The pipeline mirrors the raw frame before detection and cropping,
+        # so a face at raw x=0.2 becomes x=0.8 in the published view.
+        raw_x = 0.2
+        mirrored_x = 1.0 - raw_x
+        x1, _, w, _ = crop_origin(mirrored_x, 0.5, 2.0, 1000, 1000, 1000, 1000)
+        # Face at raw 0.2 -> mirrored 0.8 -> crop clamped to the right edge.
+        self.assertEqual(x1, 500)
 
 
 class TestFaceCenters(unittest.TestCase):
@@ -117,6 +290,27 @@ class TestLoadConfig(unittest.TestCase):
             self.assertEqual(cfg["camera_index"], 3)
             self.assertTrue(cfg["cam_flip"])
             self.assertEqual(cfg["zoom"], 2.0)
+        finally:
+            os.remove(path)
+
+    def test_legacy_tracking_keys_migrate(self):
+        import tempfile, os
+        fd, path = tempfile.mkstemp(suffix=".ini")
+        with os.fdopen(fd, "w") as f:
+            f.write(
+                "[capture]\nfps = 30\n[tracking]\nsmoothing = 0.03\n"
+                "deadzone = 0.02\nzoom_response_time = 0.5\n"
+            )
+        try:
+            cfg = load_config(path)
+            self.assertAlmostEqual(cfg["position_response_time"], 1.1, delta=0.1)
+            self.assertAlmostEqual(cfg["position_deadband"], 0.02)
+            self.assertAlmostEqual(cfg["zoom_out_response_time"], 1.0)
+            self.assertAlmostEqual(cfg["zoom_in_response_time"], 4.0)
+            # Explicit new keys win over legacy ones.
+            with open(path, "a") as f:
+                f.write("position_response_time = 2.0\n")
+            self.assertEqual(load_config(path)["position_response_time"], 2.0)
         finally:
             os.remove(path)
 
@@ -299,6 +493,17 @@ class TestLutCycling(unittest.TestCase):
 
 
 class TestSpringStep(unittest.TestCase):
+    def test_stable_at_large_frame_intervals(self):
+        # Explicit Euler with dt=0.2 and omega=12.5 diverges; the
+        # substepped version must stay bounded and converge.
+        pos, vel, target = 1.0, 0.0, 1.5
+        omega, zeta = 2.0 * math.pi / 0.5, 1.0
+        for _ in range(10):
+            pos, vel = spring_step(pos, vel, target, omega, zeta, 0.2)
+            self.assertLessEqual(pos, target + 1e-6)
+            self.assertGreaterEqual(pos, 1.0)
+        self.assertGreater(pos, 1.4)
+
     def test_critically_damped_no_overshoot_and_converges(self):
         pos, vel, target = 1.0, 0.0, 1.5
         omega, zeta, dt = 2.0 * 3.14159 / 0.9, 1.0, 1.0 / 30.0
@@ -1377,6 +1582,91 @@ class TestVideoPipeline(unittest.TestCase):
         self.assertEqual(telemetry["status"], "running")
         self.assertGreater(telemetry["fps"], 0.0)
         self.assertFalse(telemetry["tracking"])
+
+    def test_tracking_debug_telemetry_with_detection(self):
+        import time
+        import types
+        from unittest import mock
+
+        import numpy as np
+
+        sent = []
+
+        class FakeCapture:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def isOpened(self):
+                return True
+
+            def set(self, *args):
+                return True
+
+            def read(self):
+                return True, np.zeros((120, 160, 3), dtype=np.uint8)
+
+            def release(self):
+                pass
+
+        class FakeCamera:
+            device = "Fake"
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def send(self, frame):
+                sent.append(frame)
+
+            def sleep_until_next_frame(self):
+                pass
+
+        class FakeDetector:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def detect(self, image):
+                d = TestControllers.make_detection(0.5, 0.45, 0.3, eye=0.3 / 2.8)
+                return types.SimpleNamespace(detections=[d])
+
+        cfg = dict(DEFAULTS)
+        cfg.update(out_w=160, out_h=90, tracking_enabled=True, tracking_debug=True)
+        state = SharedState(cfg)
+        pipeline = VideoPipeline(cfg, state)
+        with (
+            mock.patch("pipeline.ensure_model", return_value="fake"),
+            mock.patch.object(cv2, "VideoCapture", FakeCapture),
+            mock.patch.object(pyvirtualcam, "Camera", FakeCamera),
+            mock.patch.object(
+                vision.FaceDetector,
+                "create_from_options",
+                return_value=FakeDetector(),
+            ),
+        ):
+            pipeline.start()
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                t = state.telemetry()
+                if t.get("detection_age", math.inf) < 1.0 and sent:
+                    break
+                time.sleep(0.005)
+            telemetry = state.telemetry()
+            pipeline.stop()
+            pipeline.join(2.0)
+
+        self.assertTrue(telemetry["tracking"])
+        self.assertLess(telemetry["detection_age"], 1.0)
+        for key in ("raw_center", "filtered_center", "raw_height", "filtered_height",
+                    "desired_zoom", "actual_zoom", "pos_velocity", "tracking_state"):
+            self.assertIn(key, telemetry)
 
     def test_pip_composites_slide_background_with_corner_webcam(self):
         import time

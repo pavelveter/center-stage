@@ -59,7 +59,7 @@ SWITCHES = {
 # Integer bounds mean an integer setting (LUT scale), floats otherwise.
 TUNING = {
     "zoom": ("Zoom", "zoom", 1.0, 4.0, 0.05),
-    "smoothing": ("Pan Smoothing", "smoothing", 0.01, 0.30, 0.01),
+    "response": ("Position Response", "position_response_time", 0.2, 3.0, 0.1),
     "sharpen": ("Strength", "sharpen_strength", 0.0, 1.0, 0.05),
     "lutscale": ("Scale", "lut_scale", 2, 16, 1),
 }
@@ -223,6 +223,7 @@ class HyperStageApp(App):
             yield Static("TELEMETRY", classes="panel-title first")
             yield Static("", classes="spacer")
             yield Static("", id="telemetry-body")
+            yield Static("", id="tracking-debug", classes="notice")
             yield Static("starting", id="notice", classes="notice")
             yield Rule(classes="rule")
             yield Static("CONTROLS", classes="panel-title")
@@ -232,7 +233,7 @@ class HyperStageApp(App):
             )
             # No switch on this row: spacers keep the tuner columns aligned.
             yield from self.switch_row(
-                "Pan Smoothing", None, values, tuner="smoothing", tuner_name=""
+                "Position Response", None, values, tuner="response", tuner_name=""
             )
             yield from self.switch_row("Flip Camera", "sw-cam-flip", values)
             yield from self.switch_row("Text Overlay", "sw-text", values)
@@ -363,6 +364,17 @@ class HyperStageApp(App):
         )
         try:
             self.query_one("#telemetry-body", Static).update(line)
+            if "detection_age" in values:
+                age = values["detection_age"]
+                debug = (
+                    f"raw {values['raw_center'][0]:.2f},{values['raw_center'][1]:.2f} "
+                    f"-> filt {values['filtered_center'][0]:.2f},"
+                    f"{values['filtered_center'][1]:.2f} | size "
+                    f"{values['raw_height']:.2f}->{values['filtered_height'] or 0:.2f} "
+                    f"| zoom {values['desired_zoom']:.2f}/{values['actual_zoom']:.2f} "
+                    f"| age {age:.2f}s | {values['tracking_state']}"
+                )
+                self.query_one("#tracking-debug", Static).update(debug)
         except NoMatches:
             # A shutdown tick can fire after the DOM is gone.
             pass
