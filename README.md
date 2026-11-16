@@ -105,7 +105,7 @@ The TUI keeps things clean in a centered 74-column layout:
 
 ## 🔤 Text Overlay
 
-The `[text]` section of `hyper-stage.ini` controls the centered caption: `enabled`, `text` (the published line, persisted on autosave), `font_face` (TTF name or path, e.g. `Nothing Font C`), `font_scale`, `thickness`, `padding` (minimum gap from the frame edges) and a `color_start` → `color_end` `#RRGGBB` gradient. Type in the TUI text field (`i` / `ш`) and hit Enter to publish it. Long text automatically shrinks to fit the safe zone.
+The `[text]` section of `hyper-stage.ini` controls the centered caption: `enabled`, `text` (the published line, persisted on autosave), `font_face` (TTF name or path, e.g. `Nothing Font C`), `font_scale`, `thickness`, `padding` (minimum gap from the frame edges) and a `color_start` → `color_end` `#RRGGBB` gradient. Type in the TUI text field (`i` / `ш`) and hit Enter to publish it — this also switches the overlay on if it was disabled. Long text automatically shrinks to fit the safe zone.
 
 ---
 

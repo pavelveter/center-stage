@@ -2278,7 +2278,11 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 self.assertTrue(app.state.snapshot()["cam_flip"])
 
-                # i/sh focus the text field; Enter publishes the text string.
+                # i/sh focus the text field; Enter publishes the text string
+                # and turns the overlay back on if it was switched off.
+                app.query_one("#sw-text", tui.Switch).value = False
+                await pilot.pause()
+                self.assertFalse(app.state.snapshot()["text_enabled"])
                 await pilot.press("i")
                 await pilot.pause()
                 self.assertTrue(app.query_one("#text-input", tui.Input).has_focus)
@@ -2288,6 +2292,8 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("enter")
                 await pilot.pause()
                 self.assertEqual(app.state.snapshot()["text_string"], "hello")
+                self.assertTrue(app.state.snapshot()["text_enabled"])
+                self.assertTrue(app.query_one("#sw-text", tui.Switch).value)
                 self.assertFalse(app.state.snapshot()["tracking_enabled"])
 
                 await pilot.press("c")

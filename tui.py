@@ -811,6 +811,11 @@ class HyperStageApp(App):
         if event.input.id == "text-input":
             text = event.value.strip()
             self.state.update(text_string=text)
+            # Publishing a line implies showing it: turn the overlay on.
+            switch = self.query_one("#sw-text", Switch)
+            if not switch.value:
+                switch.value = True
+                self.state.update(text_enabled=True)
             self.set_notice(f"text overlay: {text or 'cleared'}")
             event.input.blur()
             return
