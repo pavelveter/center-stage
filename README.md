@@ -69,7 +69,7 @@ Need to grab an iced oat latte or pet your cat mid-sync without anyone noticing?
 Presenting? Turn on **PiP Slide Mode** with `p` (or `з`):
 
 1. **Background:** Pick a slide or meme via the **Pick** button (native macOS file dialog) or the dropdown. Drop `.gif/.jpg/.jpeg/.png` files into the app directory and they appear in the dropdown automatically (or hit `r` to rescan instantly). `-`/`+` steps through the images of the current folder (name-sorted, stops at the ends) and `1`–`0` jumps to its first ten; dropdown entries show each file's folder.
-2. **Tiny You:** The live webcam shrinks to 25% of the frame and parks 5% from the stream edges — arrows move it one axis at a time (`↑`/`↓` pick top/bottom, `←`/`→` pick left/right, the other axis stays put). Toggling PiP zooms the webcam smoothly to/from the corner over 3 seconds instead of cutting. Seeing your slide mirrored in the call? Flip on **PiP Flip** right below the toggle.
+2. **Tiny You:** The live webcam shrinks to 25% of the frame and parks an equal padding (margin, as a fraction of the frame width) from the stream edges — arrows move it one axis at a time (`↑`/`↓` pick top/bottom, `←`/`→` pick left/right, the other axis stays put). Toggling PiP zooms the webcam smoothly to/from the corner over 3 seconds instead of cutting. Seeing your slide mirrored in the call? Flip on **PiP Flip** right below the toggle.
 3. **Grade the feed, not the slide:** LUTs, shaders and sharpening keep applying to your camera feed only; the background image stays pristine.
 
 Scale, edge margin and default corner live in the `[pip]` section of `hyper-stage.ini`.

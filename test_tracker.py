@@ -1671,10 +1671,12 @@ class TestPipMode(unittest.TestCase):
         self.assertIsNone(load_pip_image("/no/such/file.png", (64, 64)))
 
     def test_corner_rect_places_the_window_with_margins(self):
-        self.assertEqual(pip_corner_rect(CORNER_TL, 0.25, 0.05, 1920, 1080), (96, 54, 480, 270))
-        self.assertEqual(pip_corner_rect(CORNER_TR, 0.25, 0.05, 1920, 1080), (1344, 54, 480, 270))
-        self.assertEqual(pip_corner_rect(CORNER_BL, 0.25, 0.05, 1920, 1080), (96, 756, 480, 270))
-        self.assertEqual(pip_corner_rect(CORNER_BR, 0.25, 0.05, 1920, 1080), (1344, 756, 480, 270))
+        # Equal paddings on both axes: margin is a fraction of the frame
+        # width applied to every side (96px on 1920x1080).
+        self.assertEqual(pip_corner_rect(CORNER_TL, 0.25, 0.05, 1920, 1080), (96, 96, 480, 270))
+        self.assertEqual(pip_corner_rect(CORNER_TR, 0.25, 0.05, 1920, 1080), (1344, 96, 480, 270))
+        self.assertEqual(pip_corner_rect(CORNER_BL, 0.25, 0.05, 1920, 1080), (96, 714, 480, 270))
+        self.assertEqual(pip_corner_rect(CORNER_BR, 0.25, 0.05, 1920, 1080), (1344, 714, 480, 270))
 
     def test_compose_pip_pastes_webcam_into_the_background(self):
         background = np.full((100, 100, 3), 255, dtype=np.uint8)

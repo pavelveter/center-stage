@@ -87,16 +87,16 @@ PIP_ANIMATION_SECONDS = 3.0
 def pip_corner_rect(corner, scale, margin, out_w, out_h):
     """(x, y, w, h) of the webcam window for one corner.
 
-    scale and margin are fractions of the whole output frame, and the margin
-    is measured from the frame edges; corner is one of the CORNER_*
+    scale is a fraction of the whole output frame; margin is a fraction of
+    the frame width applied to every side, so the visual padding is equal
+    on the horizontal and vertical edges. corner is one of the CORNER_*
     constants. Results are rounded and always inside the frame.
     """
     w = max(1, min(out_w, round(out_w * scale)))
     h = max(1, min(out_h, round(out_h * scale)))
-    mx = max(0, min(out_w - w, round(out_w * margin)))
-    my = max(0, min(out_h - h, round(out_h * margin)))
-    x = mx if corner in (CORNER_TL, CORNER_BL) else out_w - w - mx
-    y = my if corner in (CORNER_TL, CORNER_TR) else out_h - h - my
+    m = max(0, min(min(out_w - w, out_h - h), round(out_w * margin)))
+    x = m if corner in (CORNER_TL, CORNER_BL) else out_w - w - m
+    y = m if corner in (CORNER_TL, CORNER_TR) else out_h - h - m
     return x, y, w, h
 
 
