@@ -622,6 +622,9 @@ class HyperStageApp(App):
 
     def refresh_pip_files(self) -> None:
         """Pick up files dropped into the app directory without a manual rescan."""
+        if not self.is_mounted:
+            # The discovery timer can fire while the app is shutting down.
+            return
         files = list_pip_files(self.state.snapshot()["pip_image"])
         if files == self.pip_files:
             return
@@ -698,10 +701,14 @@ class HyperStageApp(App):
         # A blank selection delivers the Select.NULL sentinel, not "".
         value = event.value if isinstance(event.value, str) else ""
         if event.select.id == "pip-select":
-            # Compare against pip_request, not the state snapshot: a delayed
-            # Changed event from a programmatic select.value set would
-            # otherwise re-apply a superseded image over a newer choice.
-            if value and value != self.pip_request:
+            # Two guards: value must match the select's current value (a
+            # stale Changed event from an earlier programmatic set carries
+            # the old value) and pip_request (the newest choice wins).
+            if (
+                value
+                and value == event.select.value
+                and value != self.pip_request
+            ):
                 self.apply_pip_image(value)
             return
         if event.select.id == "shader-select":

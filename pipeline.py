@@ -423,7 +423,7 @@ class VideoPipeline(threading.Thread):
                             out_frame,
                             state["pip_corner"],
                             float(cfg["pip_scale"]),
-                            float(cfg["pip_margin"]),
+                            int(cfg["pip_padding"]),
                         )
                     else:
                         h, w = out_frame.shape[:2]
@@ -431,7 +431,7 @@ class VideoPipeline(threading.Thread):
                             pip_anim_progress,
                             state["pip_corner"],
                             float(cfg["pip_scale"]),
-                            float(cfg["pip_margin"]),
+                            int(cfg["pip_padding"]),
                             w,
                             h,
                         )

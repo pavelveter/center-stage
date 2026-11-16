@@ -43,7 +43,7 @@ DEFAULTS = {
     "pip_image": "",            # path to the background image (empty = none)
     "pip_flip": False,          # mirror the background image horizontally
     "pip_scale": 0.25,          # webcam window size as a fraction of the frame
-    "pip_margin": 0.05,         # webcam window offset from the edges, fraction of frame width
+    "pip_padding": 96,          # webcam window offset from the screen edges, pixels
     "pip_animation": 3.0,       # PiP on/off zoom duration in seconds (0 = instant)
     "pip_corner": 0,            # default webcam corner: 0 TL, 1 TR, 2 BL, 3 BR
     "theme": "textual-dark",    # Textual TUI theme (change via the command palette)
@@ -98,7 +98,7 @@ INI_MAP = {
         "image": "pip_image",
         "flip": "pip_flip",
         "scale": "pip_scale",
-        "margin": "pip_margin",
+        "padding": "pip_padding",
         "animation": "pip_animation",
         "corner": "pip_corner",
     },

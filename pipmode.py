@@ -79,30 +79,30 @@ def load_pip_image(path, size):
     return canvas
 
 
-def pip_corner_rect(corner, scale, margin, out_w, out_h):
+def pip_corner_rect(corner, scale, padding, out_w, out_h):
     """(x, y, w, h) of the webcam window for one corner.
 
-    scale is a fraction of the whole output frame; margin is a fraction of
-    the frame width applied to every side, so the visual padding is equal
-    on the horizontal and vertical edges. corner is one of the CORNER_*
-    constants. Results are rounded and always inside the frame.
+    scale is a fraction of the whole output frame; padding is the window
+    offset from the screen edges in pixels, equal on every side. corner is
+    one of the CORNER_* constants. Results are rounded and always inside
+    the frame.
     """
     w = max(1, min(out_w, round(out_w * scale)))
     h = max(1, min(out_h, round(out_h * scale)))
-    m = max(0, min(min(out_w - w, out_h - h), round(out_w * margin)))
+    m = max(0, min(min(out_w - w, out_h - h), int(padding)))
     x = m if corner in (CORNER_TL, CORNER_BL) else out_w - w - m
     y = m if corner in (CORNER_TL, CORNER_TR) else out_h - h - m
     return x, y, w, h
 
 
-def pip_transition_rect(progress, corner, scale, margin, out_w, out_h):
+def pip_transition_rect(progress, corner, scale, padding, out_w, out_h):
     """(x, y, w, h) of the webcam window mid-animation.
 
     progress 0.0 is the full output frame (PiP off), 1.0 the corner
     window (PiP on); in between the rect is eased with a smoothstep and
     always stays inside the frame.
     """
-    x, y, w, h = pip_corner_rect(corner, scale, margin, out_w, out_h)
+    x, y, w, h = pip_corner_rect(corner, scale, padding, out_w, out_h)
     eased = progress * progress * (3.0 - 2.0 * progress)
     rx = round(x * eased)
     ry = round(y * eased)
@@ -126,7 +126,7 @@ def compose_pip_rect(canvas, background, webcam, rect):
     return out
 
 
-def compose_pip(canvas, background, webcam, corner, scale, margin):
+def compose_pip(canvas, background, webcam, corner, scale, padding):
     """Background image plus the webcam window snapped into one corner.
 
     background is a pre-fitted, display-ready frame (see load_pip_image); it
@@ -134,7 +134,7 @@ def compose_pip(canvas, background, webcam, corner, scale, margin):
     thread. The webcam frame is resized to the corner window size.
     """
     h, w = canvas.shape[:2]
-    rect = pip_corner_rect(corner, scale, margin, w, h)
+    rect = pip_corner_rect(corner, scale, padding, w, h)
     return compose_pip_rect(canvas, background, webcam, rect)
 
 

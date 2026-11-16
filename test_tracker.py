@@ -1400,7 +1400,7 @@ class TestVideoPipeline(unittest.TestCase):
         x, y, w, h = pip_corner_rect(
             state.snapshot()["pip_corner"],
             cfg["pip_scale"],
-            cfg["pip_margin"],
+            cfg["pip_padding"],
             160,
             90,
         )
@@ -1425,17 +1425,17 @@ class TestVideoPipeline(unittest.TestCase):
         )
 
         w, h = 160, 90
-        corner = pip_corner_rect(CORNER_BR, 0.25, 0.05, w, h)
+        corner = pip_corner_rect(CORNER_BR, 0.25, 8, w, h)
         # progress 0: the full frame (PiP off)...
-        self.assertEqual(pip_transition_rect(0.0, CORNER_BR, 0.25, 0.05, w, h),
+        self.assertEqual(pip_transition_rect(0.0, CORNER_BR, 0.25, 8, w, h),
                          (0, 0, w, h))
         # ...progress 1: the exact corner window (PiP on).
-        self.assertEqual(pip_transition_rect(1.0, CORNER_BR, 0.25, 0.05, w, h),
+        self.assertEqual(pip_transition_rect(1.0, CORNER_BR, 0.25, 8, w, h),
                          corner)
         # Mid-flight the rect sits between the two and stays in frame.
         for progress in (0.25, 0.5, 0.75):
             x, y, rw, rh = pip_transition_rect(
-                progress, CORNER_BR, 0.25, 0.05, w, h
+                progress, CORNER_BR, 0.25, 8, w, h
             )
             self.assertGreater(x, 0)
             self.assertLess(x + rw, w)
@@ -1455,7 +1455,7 @@ class TestVideoPipeline(unittest.TestCase):
 
         self.assertTrue(
             (settled == compose_pip(np.zeros((h, w, 3), dtype=np.uint8),
-                                    background, webcam, CORNER_BR, 0.25, 0.05)).all()
+                                    background, webcam, CORNER_BR, 0.25, 8)).all()
         )
         full = compose_pip_rect(
             np.zeros((h, w, 3), dtype=np.uint8), background, webcam, (0, 0, w, h)
@@ -1684,16 +1684,16 @@ class TestPipMode(unittest.TestCase):
     def test_corner_rect_places_the_window_with_margins(self):
         # Equal paddings on both axes: margin is a fraction of the frame
         # width applied to every side (96px on 1920x1080).
-        self.assertEqual(pip_corner_rect(CORNER_TL, 0.25, 0.05, 1920, 1080), (96, 96, 480, 270))
-        self.assertEqual(pip_corner_rect(CORNER_TR, 0.25, 0.05, 1920, 1080), (1344, 96, 480, 270))
-        self.assertEqual(pip_corner_rect(CORNER_BL, 0.25, 0.05, 1920, 1080), (96, 714, 480, 270))
-        self.assertEqual(pip_corner_rect(CORNER_BR, 0.25, 0.05, 1920, 1080), (1344, 714, 480, 270))
+        self.assertEqual(pip_corner_rect(CORNER_TL, 0.25, 96, 1920, 1080), (96, 96, 480, 270))
+        self.assertEqual(pip_corner_rect(CORNER_TR, 0.25, 96, 1920, 1080), (1344, 96, 480, 270))
+        self.assertEqual(pip_corner_rect(CORNER_BL, 0.25, 96, 1920, 1080), (96, 714, 480, 270))
+        self.assertEqual(pip_corner_rect(CORNER_BR, 0.25, 96, 1920, 1080), (1344, 714, 480, 270))
 
     def test_compose_pip_pastes_webcam_into_the_background(self):
         background = np.full((100, 100, 3), 255, dtype=np.uint8)
         webcam = np.zeros((10, 10, 3), dtype=np.uint8)
         webcam[:] = (0, 255, 0)
-        out = compose_pip(np.zeros((100, 100, 3), np.uint8), background, webcam, CORNER_TL, 0.25, 0.05)
+        out = compose_pip(np.zeros((100, 100, 3), np.uint8), background, webcam, CORNER_TL, 0.25, 5)
         # Window: x=5, y=5, 25x25 in the top-left corner of the background.
         self.assertEqual(tuple(out[10, 10]), (0, 255, 0))
         self.assertEqual(tuple(out[0, 0]), (255, 255, 255))
@@ -1724,14 +1724,14 @@ class TestPipMode(unittest.TestCase):
 
         fd, path = tempfile.mkstemp(suffix=".ini")
         with os.fdopen(fd, "w") as f:
-            f.write("[pip]\nenabled = true\nimage = img/slide.gif\nflip = true\nscale = 0.3\nmargin = 0.08\ncorner = 2\n")
+            f.write("[pip]\nenabled = true\nimage = img/slide.gif\nflip = true\nscale = 0.3\npadding = 100\ncorner = 2\n")
         try:
             cfg = load_config(path)
             self.assertTrue(cfg["pip_enabled"])
             self.assertEqual(cfg["pip_image"], "img/slide.gif")
             self.assertTrue(cfg["pip_flip"])
             self.assertAlmostEqual(cfg["pip_scale"], 0.3)
-            self.assertAlmostEqual(cfg["pip_margin"], 0.08)
+            self.assertEqual(cfg["pip_padding"], 100)
             self.assertEqual(cfg["pip_corner"], 2)
             save_config(path, cfg)
             again = load_config(path)
