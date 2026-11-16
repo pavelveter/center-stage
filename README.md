@@ -119,10 +119,8 @@ landmarks (`face_size`, falling back to bbox height when landmarks are absent)
 and uses `zoom_measurement_smoothing`, `zoom_deadzone`, separate
 `zoom_in_response_time` (`4.0s`, slow) and `zoom_out_response_time` (`1.0s`,
 responsive), `detection_timeout` (`0.5s`) and `max_measurement_change`
-(`0.6`/s). The old `smoothing`, `deadzone`, `zoom_response_time` and
-`zoom_damping_ratio` keys are still read and converted on load. Set
-`debug = true` to publish raw/filtered center and size, desired/actual zoom,
-detection age and confidence in the telemetry panel.
+(`0.6`/s). Set `debug = true` to publish raw/filtered center and size,
+desired/actual zoom, detection age and confidence in the telemetry panel.
 
 ---
 

@@ -35,7 +35,7 @@
   `detection_timeout` make both controllers ease toward default framing.
 - Optional `tracking_debug` telemetry exposes raw/filtered center and size,
   desired/actual zoom, detection age/confidence, position velocity and state.
-- Legacy ini keys (`smoothing`, `deadzone`, `zoom_response_time`,
-  `zoom_damping_ratio`) keep working via migration to the new parameters.
+- Legacy ini keys were removed entirely after the new controllers landed;
+  `save_config` drops any stale copies from existing configs.
 - Performance: no extra image processing; controllers are pure numeric state,
   detection stays on the 640×360 frame.

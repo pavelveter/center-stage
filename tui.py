@@ -650,17 +650,21 @@ class HyperStageApp(App):
         if not self.is_mounted:
             # The discovery timer can fire while the app is shutting down.
             return
-        files = list_pip_files(self.state.snapshot()["pip_image"])
+        current = self.state.snapshot()["pip_image"]
+        # Merge instead of replacing: scanning follows the current image's
+        # folder, so a Pick from another folder would otherwise drop every
+        # previously discovered image from the dropdown and break cycling.
+        found = set(list_pip_files(current))
+        found.update(p for p in self.pip_files if os.path.exists(p))
+        if current:
+            found.add(current)
+        files = sorted(found, key=str.lower)
         if files == self.pip_files:
             return
         self.pip_files = files
         select = self.query_one("#pip-select", Select)
         select.set_options(self.pip_options())
-        select.value = (
-            self.state.snapshot()["pip_image"]
-            if self.state.snapshot()["pip_image"] in files
-            else Select.NULL
-        )
+        select.value = current if current in files else Select.NULL
         self.set_notice("found new PiP images")
 
     # --- LUT selection ---------------------------------------------------

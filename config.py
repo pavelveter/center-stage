@@ -1,7 +1,6 @@
 """Configuration: defaults, INI mapping, load/save and path resolution."""
 
 import configparser
-import math
 import os
 import tempfile
 
@@ -29,8 +28,6 @@ DEFAULTS = {
     "zoom": 1.5,                # base crop factor (higher = tighter framing)
     "max_head_height": 0.667,   # max head height as a fraction of frame height
     "head_ratio": 1.35,         # full head / face detector bbox
-    "zoom_response_time": 0.9,  # legacy: migrated to zoom_in/out response times
-    "zoom_damping_ratio": 1.0,  # legacy: kept for config compatibility
     "zoom_deadzone": 0.05,      # relative hysteresis on the zoom target
     "position_response_time": 0.7,  # spring response time for pan (seconds)
     "position_damping": 1.0,    # >=1 prevents pan overshoot
@@ -41,8 +38,6 @@ DEFAULTS = {
     "detection_timeout": 0.5,   # seconds before easing to default framing
     "max_measurement_change": 0.6,  # max face-size change per second
     "tracking_debug": False,    # publish extra tracking telemetry
-    "smoothing": 0.08,          # legacy EMA alpha (migrated on load)
-    "deadzone": 0.04,           # legacy pan deadzone (migrated on load)
     "min_det_conf": 0.6,        # MediaPipe face-detection confidence floor
     "detect_every": 3,          # run detection every N frames (CPU vs latency)
     "lut_enabled": True,        # toggle color grading at runtime
@@ -83,13 +78,9 @@ INI_MAP = {
     "tracking": {
         "enabled": "tracking_enabled",
         "zoom": "zoom",
-        "smoothing": "smoothing",
         "max_head_height": "max_head_height",
         "head_ratio": "head_ratio",
-        "zoom_response_time": "zoom_response_time",
-        "zoom_damping_ratio": "zoom_damping_ratio",
         "zoom_deadzone": "zoom_deadzone",
-        "deadzone": "deadzone",
         "position_response_time": "position_response_time",
         "position_damping": "position_damping",
         "position_deadband": "position_deadband",
@@ -144,6 +135,14 @@ INI_MAP = {
 }
 
 
+LEGACY_KEYS = (
+    ("tracking", "smoothing"),
+    ("tracking", "deadzone"),
+    ("tracking", "zoom_response_time"),
+    ("tracking", "zoom_damping_ratio"),
+    ("pip", "margin"),
+)
+
 # Explanations written above every key by save_config, so the live ini stays
 # self-documenting through autosaves instead of losing comments on each write.
 SECTION_HELP = {
@@ -171,14 +170,10 @@ KEY_HELP = {
     ("capture", "fps"): "Capture and virtual-camera frame rate.",
     ("tracking", "enabled"): "Master switch for face tracking (hotkey t / е).",
     ("tracking", "zoom"): "Base/max zoom factor; the controller never exceeds it. TUI: Zoom tuner.",
-    ("tracking", "smoothing"): "LEGACY EMA alpha, migrated to position_response_time on load.",
-    ("tracking", "deadzone"): "LEGACY pan deadzone, migrated to position_deadband on load.",
     ("tracking", "min_detection_confidence"): "MediaPipe detector confidence floor (0..1).",
     ("tracking", "detect_every"): "Run inference every Nth frame (6 = ~5 detections/s at 30 fps).",
     ("tracking", "max_head_height"): "Head may occupy at most this fraction of the output height.",
     ("tracking", "head_ratio"): "Full head / detected face bbox height; maps face size to framing.",
-    ("tracking", "zoom_response_time"): "LEGACY spring time, migrated to zoom_in/out_response_time.",
-    ("tracking", "zoom_damping_ratio"): "LEGACY spring damping; kept for old configs, unused now.",
     ("tracking", "position_response_time"): "Pan spring response time: larger = slower, calmer pan. TUI: Position Response.",
     ("tracking", "position_damping"): "Pan damping (>=1 means no overshoot / oscillation).",
     ("tracking", "position_deadband"): "Ignore face-center moves below this fraction of the frame (0.01 = 1%).",
@@ -209,7 +204,6 @@ KEY_HELP = {
     ("pip", "padding"): "Equal pixel gap from every screen edge to the webcam window.",
     ("pip", "animation"): "Zoom transition duration in seconds when PiP toggles (0 = instant).",
     ("pip", "corner"): "Default corner: 0 TL, 1 TR, 2 BL, 3 BR; arrows move it live.",
-    ("pip", "margin"): "IGNORED legacy key (replaced by padding); safe to delete.",
     ("appearance", "theme"): "Textual theme name.",
     ("text", "enabled"): "Draw the centered text overlay; Enter in the input turns it on.",
     ("text", "text"): "Published caption (persisted from the TUI input).",
@@ -258,44 +252,7 @@ def load_config(path):
                         print(
                             f"warning: invalid value for {section}.{ini_key}={raw!r}; using default {default}"
                         )
-    _migrate_tracking_settings(parser, cfg)
     return cfg
-
-
-def _migrate_tracking_settings(parser, cfg):
-    """Map old tracking keys onto the new controllers when no new key is set.
-
-    Old configs keep working: an EMA alpha is converted to an equivalent
-    response time at the configured FPS, and the old single zoom spring time
-    seeds the new asymmetric in/out times. Explicit new values always win.
-    """
-    if not parser.has_section("tracking"):
-        return
-    has = lambda key: parser.has_option("tracking", key)
-
-    def number(key):
-        raw = parser.get("tracking", key).strip()
-        try:
-            return float(raw)
-        except ValueError:
-            return None
-
-    if has("smoothing") and not has("position_response_time"):
-        alpha = number("smoothing")
-        if alpha is not None and 0.0 < alpha < 1.0:
-            fps = max(1.0, cfg["fps"])
-            cfg["position_response_time"] = min(
-                4.0, max(0.2, -1.0 / fps / math.log(1.0 - alpha))
-            )
-    if has("deadzone") and not has("position_deadband"):
-        deadband = number("deadzone")
-        if deadband is not None:
-            cfg["position_deadband"] = min(0.1, max(0.002, deadband))
-    if has("zoom_response_time") and not has("zoom_in_response_time"):
-        old = number("zoom_response_time")
-        if old is not None:
-            cfg["zoom_out_response_time"] = min(4.0, max(0.3, old * 2.0))
-            cfg["zoom_in_response_time"] = min(12.0, max(1.0, old * 8.0))
 
 
 def ini_value(value):
@@ -343,6 +300,9 @@ def save_config(path, cfg):
             if cfg_key in ("lut_file", "pip_image"):
                 value = portable_path(value, directory)
             parser.set(section, ini_key, ini_value(value))
+    for section, ini_key in LEGACY_KEYS:
+        if parser.has_section(section):
+            parser.remove_option(section, ini_key)
     os.makedirs(directory, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
         prefix=".hyper-stage-", suffix=".ini", dir=directory

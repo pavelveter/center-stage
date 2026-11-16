@@ -293,24 +293,31 @@ class TestLoadConfig(unittest.TestCase):
         finally:
             os.remove(path)
 
-    def test_legacy_tracking_keys_migrate(self):
+    def test_removed_legacy_keys_are_ignored(self):
         import tempfile, os
         fd, path = tempfile.mkstemp(suffix=".ini")
         with os.fdopen(fd, "w") as f:
             f.write(
-                "[capture]\nfps = 30\n[tracking]\nsmoothing = 0.03\n"
-                "deadzone = 0.02\nzoom_response_time = 0.5\n"
+                "[tracking]\nsmoothing = 0.03\ndeadzone = 0.08\n"
+                "zoom_response_time = 0.5\nzoom_damping_ratio = 0.5\n"
+                "position_response_time = 1.2\n"
             )
         try:
             cfg = load_config(path)
-            self.assertAlmostEqual(cfg["position_response_time"], 1.1, delta=0.1)
-            self.assertAlmostEqual(cfg["position_deadband"], 0.02)
-            self.assertAlmostEqual(cfg["zoom_out_response_time"], 1.0)
-            self.assertAlmostEqual(cfg["zoom_in_response_time"], 4.0)
-            # Explicit new keys win over legacy ones.
-            with open(path, "a") as f:
-                f.write("position_response_time = 2.0\n")
-            self.assertEqual(load_config(path)["position_response_time"], 2.0)
+            self.assertEqual(cfg["position_response_time"], 1.2)
+            self.assertEqual(cfg["position_deadband"], DEFAULTS["position_deadband"])
+            for removed in ("smoothing", "deadzone", "zoom_response_time",
+                            "zoom_damping_ratio"):
+                self.assertNotIn(removed, cfg)
+            # save_config drops unknown keys instead of carrying them forward.
+            save_config(path, cfg)
+            with open(path) as saved:
+                text = saved.read()
+            for removed in ("smoothing =", "deadzone =", "zoom_response_time =",
+                            "zoom_damping_ratio =", "margin ="):
+                self.assertFalse(
+                    any(line.startswith(removed) for line in text.splitlines())
+                )
         finally:
             os.remove(path)
 
@@ -2802,9 +2809,11 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                         app.refresh_pip_files()
                     await pilot.pause()
                     folder_label = f"…/{os.path.basename(folder)}/"
+                    labels = [option[0] for option in app.pip_options()]
+                    self.assertIn(folder_label + "meme.png", labels)
+                    self.assertIn(folder_label + "slide.png", labels)
                     self.assertEqual(
-                        [option[0] for option in app.pip_options()],
-                        [folder_label + "meme.png", folder_label + "slide.png"],
+                        [option[1] for option in app.pip_options()].count(second), 1
                     )
 
                     # +/- step through the current folder's images and stop

@@ -33,7 +33,6 @@ class SharedState:
         "zoom_deadzone",
         "detection_timeout",
         "max_measurement_change",
-        "smoothing",
         "lut_enabled",
         "lut_file",
         "lut_scale",
