@@ -59,8 +59,7 @@ def load_pip_image(path, size):
 
     Aspect ratio is preserved with black bars, so slides and memes are never
     cropped or distorted. Animated .gif files use their first frame.
-    Returns (canvas, rect) where rect is (x, y, w, h) of the picture inside
-    the canvas, or None when the file cannot be read.
+    Returns None when the file cannot be read.
     """
     if not path or not os.path.exists(path):
         return None
@@ -77,41 +76,33 @@ def load_pip_image(path, size):
     x = (out_w - scaled_w) // 2
     y = (out_h - scaled_h) // 2
     canvas[y : y + scaled_h, x : x + scaled_w] = resized
-    return canvas, (x, y, scaled_w, scaled_h)
+    return canvas
 
 
-def pip_corner_rect(corner, scale, margin, out_w, out_h, content_rect=None):
+def pip_corner_rect(corner, scale, margin, out_w, out_h):
     """(x, y, w, h) of the webcam window for one corner.
 
     scale is a fraction of the whole output frame; margin is a fraction of
     the frame width applied to every side, so the visual padding is equal
-    on the horizontal and vertical edges. The window is positioned inside
-    content_rect — the letterboxed picture area of the background — so the
-    padding is measured from the visible picture, not the stream frame
-    (full frame when content_rect is None). corner is one of the CORNER_*
+    on the horizontal and vertical edges. corner is one of the CORNER_*
     constants. Results are rounded and always inside the frame.
     """
     w = max(1, min(out_w, round(out_w * scale)))
     h = max(1, min(out_h, round(out_h * scale)))
-    if content_rect is None:
-        content_rect = (0, 0, out_w, out_h)
-    cx, cy, cw, ch = content_rect
-    m = max(0, min(cw - w, ch - h, round(out_w * margin)))
-    x = cx + m if corner in (CORNER_TL, CORNER_BL) else cx + cw - w - m
-    y = cy + m if corner in (CORNER_TL, CORNER_TR) else cy + ch - h - m
+    m = max(0, min(min(out_w - w, out_h - h), round(out_w * margin)))
+    x = m if corner in (CORNER_TL, CORNER_BL) else out_w - w - m
+    y = m if corner in (CORNER_TL, CORNER_TR) else out_h - h - m
     return x, y, w, h
 
 
-def pip_transition_rect(progress, corner, scale, margin, out_w, out_h, content_rect=None):
+def pip_transition_rect(progress, corner, scale, margin, out_w, out_h):
     """(x, y, w, h) of the webcam window mid-animation.
 
     progress 0.0 is the full output frame (PiP off), 1.0 the corner
     window (PiP on); in between the rect is eased with a smoothstep and
     always stays inside the frame.
     """
-    x, y, w, h = pip_corner_rect(
-        corner, scale, margin, out_w, out_h, content_rect=content_rect
-    )
+    x, y, w, h = pip_corner_rect(corner, scale, margin, out_w, out_h)
     eased = progress * progress * (3.0 - 2.0 * progress)
     rx = round(x * eased)
     ry = round(y * eased)
@@ -135,7 +126,7 @@ def compose_pip_rect(canvas, background, webcam, rect):
     return out
 
 
-def compose_pip(canvas, background, webcam, corner, scale, margin, content_rect=None):
+def compose_pip(canvas, background, webcam, corner, scale, margin):
     """Background image plus the webcam window snapped into one corner.
 
     background is a pre-fitted, display-ready frame (see load_pip_image); it
@@ -143,7 +134,7 @@ def compose_pip(canvas, background, webcam, corner, scale, margin, content_rect=
     thread. The webcam frame is resized to the corner window size.
     """
     h, w = canvas.shape[:2]
-    rect = pip_corner_rect(corner, scale, margin, w, h, content_rect=content_rect)
+    rect = pip_corner_rect(corner, scale, margin, w, h)
     return compose_pip_rect(canvas, background, webcam, rect)
 
 

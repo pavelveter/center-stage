@@ -44,7 +44,6 @@ class SharedState:
         }
         self._lut_table = None
         self._pip_frame = None
-        self._pip_content_rect = None
         self._revision = 0
         self._saved_revision = 0
 
@@ -98,22 +97,10 @@ class SharedState:
         with self._lock:
             return self._pip_frame
 
-    def set_pip_frame(self, frame, content_rect=None):
-        """Replace the active PiP background frame (cheap; consumes a reference).
-
-        content_rect is (x, y, w, h) of the letterboxed picture inside the
-        frame, used to measure the PiP window padding from the visible
-        picture rather than the stream frame.
-        """
+    def set_pip_frame(self, frame):
+        """Replace the active PiP background frame (cheap; consumes a reference)."""
         with self._lock:
             self._pip_frame = frame
-            self._pip_content_rect = content_rect
-
-    @property
-    def pip_content_rect(self):
-        """(x, y, w, h) of the picture inside the PiP background, or None."""
-        with self._lock:
-            return self._pip_content_rect
 
     def pending_revision(self):
         """Revision to save, or None when everything is already persisted."""
