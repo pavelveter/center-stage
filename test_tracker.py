@@ -1657,7 +1657,7 @@ class TestPipMode(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "wide.png")
             cv2.imwrite(path, np.full((60, 120, 3), 200, dtype=np.uint8))
-            frame = load_pip_image(path, (100, 100))
+            frame, rect = load_pip_image(path, (100, 100))
         self.assertIsNotNone(frame)
         self.assertEqual(frame.shape, (100, 100, 3))
         self.assertEqual(frame.dtype, np.uint8)
@@ -1665,6 +1665,9 @@ class TestPipMode(unittest.TestCase):
         self.assertEqual(int(frame[0, 50].max()), 0)
         self.assertEqual(int(frame[99, 50].max()), 0)
         self.assertEqual(int(frame[50, 50].max()), 200)
+        # The content rect locates the picture inside the canvas.
+        self.assertEqual(rect, (0, 25, 100, 50))
+        self.assertEqual(int(frame[rect[1], rect[0] + 50].max()), 200)
 
     def test_load_pip_image_rejects_missing_and_unreadable(self):
         self.assertIsNone(load_pip_image("", (64, 64)))
@@ -1677,6 +1680,15 @@ class TestPipMode(unittest.TestCase):
         self.assertEqual(pip_corner_rect(CORNER_TR, 0.25, 0.05, 1920, 1080), (1344, 96, 480, 270))
         self.assertEqual(pip_corner_rect(CORNER_BL, 0.25, 0.05, 1920, 1080), (96, 714, 480, 270))
         self.assertEqual(pip_corner_rect(CORNER_BR, 0.25, 0.05, 1920, 1080), (1344, 714, 480, 270))
+        # With a letterboxed background the padding is measured from the
+        # visible picture area, not the stream frame: a 3:2 image in a
+        # 16:9 frame leaves 150px bars left/right, so the window sits
+        # 96px inside the picture's edges on every side.
+        photo_rect = (150, 0, 1620, 1080)
+        x, y, w, h = pip_corner_rect(CORNER_BR, 0.25, 0.05, 1920, 1080, photo_rect)
+        self.assertEqual((x, y, w, h), (1194, 714, 480, 270))
+        # Equal paddings from the picture: 150+1620-(x+w) == 1080-(y+h).
+        self.assertEqual(150 + 1620 - (x + w), 1080 - (y + h))
 
     def test_compose_pip_pastes_webcam_into_the_background(self):
         background = np.full((100, 100, 3), 255, dtype=np.uint8)

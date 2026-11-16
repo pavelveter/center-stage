@@ -175,6 +175,10 @@ class VideoPipeline(threading.Thread):
         pip_display = None
         pip_display_src = None
         pip_flip_prev = None
+        # Picture area inside the display-oriented background; the PiP
+        # window padding is measured from the visible picture, not the
+        # stream frame (None means the background fills the frame).
+        pip_content = None
         # PiP zoom animation: 1.0 is the settled corner window (PiP on),
         # 0.0 the full-frame webcam (PiP off); it eases toward its target
         # over PIP_ANIMATION_SECONDS, reversing smoothly mid-flight.
@@ -413,6 +417,15 @@ class VideoPipeline(threading.Thread):
                         pip_display = cv2.flip(background, 1) if flip else background
                         pip_display_src = background
                         pip_flip_prev = flip
+                        pip_content = self.state.pip_content_rect
+                        if flip and pip_content is not None:
+                            fx, fy, fw, fh = pip_content
+                            pip_content = (
+                                background.shape[1] - fx - fw,
+                                fy,
+                                fw,
+                                fh,
+                            )
                     if pip_anim_progress >= 1.0:
                         out_frame = compose_pip(
                             out_frame,
@@ -421,6 +434,7 @@ class VideoPipeline(threading.Thread):
                             state["pip_corner"],
                             float(cfg["pip_scale"]),
                             float(cfg["pip_margin"]),
+                            content_rect=pip_content,
                         )
                     else:
                         h, w = out_frame.shape[:2]
@@ -431,6 +445,7 @@ class VideoPipeline(threading.Thread):
                             float(cfg["pip_margin"]),
                             w,
                             h,
+                            content_rect=pip_content,
                         )
                         out_frame = compose_pip_rect(
                             out_frame, pip_display, out_frame, rect
