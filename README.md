@@ -45,11 +45,32 @@ Click literally anything in the TUI (switches, dropdowns, `-`/`+` buttons, foote
 | `m`       | `ь`       | Toggle **Magic Loop (AFK)** (ultimate stealth mode, see below)         |
 | `f`       | `а`       | Toggle **Deep Fry / Glitch** (when the meeting could've been an email) |
 | `p`       | `з`       | Toggle **PiP Slide Mode** (meme background, tiny webcam, see below)    |
+| `i`       | `ш`       | Focus on **Text Input** (drop the text, then hit the Enter, see below) |
 | `r`       | `к`       | Hot-reload `LUT/` and `shaders/` folders on the fly                    |
 | `]` / `[` | `ъ` / `х` | Cycle next / previous `.cube` LUT                                      |
 | `>` / `<` | `ю` / `б` | Cycle next / previous `.glsl` shader                                   |
 | `←↑↓→`    | —         | Move the PiP window: up/down pick top/bottom, left/right pick the side |
 | `-` / `+` | —         | Previous / next PiP image within its folder, stops at the ends (`1`–`0` jump to its first ten) |
+
+---
+
+## 🛠️ Dashboard Anatomy
+
+![hyper-stage tui](tui.png)
+
+The TUI keeps things clean in a centered 74-column layout:
+
+- **TELEMETRY:** Live FPS, current zoom multiplier, `TRACKING` / `IDLE` status, active virtual camera device, and status notifications.
+- **CONTROLS:**
+  - _Face Tracking_ switch + `Zoom` tuner
+  - _Flip Camera_ switch (mirror the whole feed, selfie-style)
+  - _Text Overlay_ switch + text field (`i` / `ш` to focus, Enter to publish) with `[text]` ini settings (font, scale, thickness, edge padding, gradient colors)
+  - _Position Response_ tuner (pan spring time; zoom is deliberately slower)
+  - _LUT Grading_ + `Scale` tuner + `.cube` selector
+  - _GLSL Shader_ + `.glsl` selector
+  - _Smart Sharpen_ + `Strength` tuner (edge-gated so you don't look deep-fried unless you want to)
+  - _Time Loop (1s)_, _Magic Loop (AFK)_, and _Deep Fry_ switches
+  - _PiP Slide_ + image selector + `Pick` button (native file dialog), and _PiP Flip_ mirror toggle
 
 ---
 
@@ -82,24 +103,6 @@ Scale, edge padding (pixels), zoom animation duration and default corner live in
 - **GLSL Shaders (`.glsl`):** Drop Shadertoy-style fragment shaders (`void mainImage(out vec4 fragColor, in vec2 fragCoord)`) into `shaders/` — the repo ships a starter pack (1-bit dither, CRT, halftone, pixel-art, optical-flow and friends). Runs headless via `moderngl` on your GPU.
   - Supports **multibuffer Shadertoy packs**! Drop a folder named `<effect>.glsl/` containing `Common.glsl`, `Buffer A.glsl`, ..., `Image.glsl` with `RGBA16F` ping-pong feedback, mipmaps, and custom channel routing directives (`// hyper-stage: 2=Buffer B`).
   - Built-in stand-ins for `camera`, `noise`, `font` (16x16 ASCII glyph atlas), and `feedback`.
-
----
-
-## 🛠️ Dashboard Anatomy
-
-The TUI keeps things clean in a centered 74-column layout:
-
-- **TELEMETRY:** Live FPS, current zoom multiplier, `TRACKING` / `IDLE` status, active virtual camera device, and status notifications.
-- **CONTROLS:**
-  - _Face Tracking_ switch + `Zoom` tuner
-  - _Flip Camera_ switch (mirror the whole feed, selfie-style)
-  - _Text Overlay_ switch + text field (`i` / `ш` to focus, Enter to publish) with `[text]` ini settings (font, scale, thickness, edge padding, gradient colors)
-  - _Position Response_ tuner (pan spring time; zoom is deliberately slower)
-  - _LUT Grading_ + `Scale` tuner + `.cube` selector
-  - _GLSL Shader_ + `.glsl` selector
-  - _Smart Sharpen_ + `Strength` tuner (edge-gated so you don't look deep-fried unless you want to)
-  - _Time Loop (1s)_, _Magic Loop (AFK)_, and _Deep Fry_ switches
-  - _PiP Slide_ + image selector + `Pick` button (native file dialog), and _PiP Flip_ mirror toggle
 
 ---
 
