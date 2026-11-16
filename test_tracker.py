@@ -63,10 +63,11 @@ class TestLoadConfig(unittest.TestCase):
         import tempfile, os
         fd, path = tempfile.mkstemp(suffix=".ini")
         with os.fdopen(fd, "w") as f:
-            f.write("[camera]\nindex = 3\n[tracking]\nzoom = 2.0\n")
+            f.write("[camera]\nindex = 3\nflip = true\n[tracking]\nzoom = 2.0\n")
         try:
             cfg = load_config(path)
             self.assertEqual(cfg["camera_index"], 3)
+            self.assertTrue(cfg["cam_flip"])
             self.assertEqual(cfg["zoom"], 2.0)
         finally:
             os.remove(path)
@@ -1464,6 +1465,91 @@ class TestVideoPipeline(unittest.TestCase):
         # The background was never mutated.
         self.assertEqual(tuple(background[45, 45]), (10, 10, 10))
 
+    def test_cam_flip_mirrors_the_published_stream(self):
+        import time
+        import types
+        from unittest import mock
+
+        import numpy as np
+
+        sent = []
+
+        class FakeCapture:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def isOpened(self):
+                return True
+
+            def set(self, *args):
+                return True
+
+            def read(self):
+                # Asymmetric raw frame: red left half, blue right half.
+                frame = np.zeros((120, 160, 3), dtype=np.uint8)
+                frame[:, :80] = (10, 10, 255)
+                frame[:, 80:] = (255, 10, 10)
+                return True, frame
+
+            def release(self):
+                pass
+
+        class FakeCamera:
+            device = "Fake Virtual Camera"
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def send(self, frame):
+                sent.append(frame)
+
+            def sleep_until_next_frame(self):
+                pass
+
+        class FakeDetector:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def detect(self, image):
+                return types.SimpleNamespace(detections=[])
+
+        cfg = dict(DEFAULTS)
+        cfg.update(out_w=160, out_h=90, tracking_enabled=False, cam_flip=True)
+        state = SharedState(cfg)
+        pipeline = VideoPipeline(cfg, state)
+        with (
+            mock.patch("pipeline.ensure_model", return_value="fake"),
+            mock.patch.object(cv2, "VideoCapture", FakeCapture),
+            mock.patch.object(pyvirtualcam, "Camera", FakeCamera),
+            mock.patch.object(
+                vision.FaceDetector,
+                "create_from_options",
+                return_value=FakeDetector(),
+            ),
+        ):
+            pipeline.start()
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and not sent:
+                time.sleep(0.005)
+            pipeline.stop()
+            pipeline.join(2.0)
+
+        self.assertGreaterEqual(len(sent), 1)
+        # The published frame is the mirror of the raw capture: red right,
+        # blue left (the raw frame's halves are swapped).
+        self.assertEqual(int(sent[0][45, 120][2]), 255)   # red half on the right
+        self.assertEqual(int(sent[0][45, 40][0]), 255)    # blue half on the left
+        self.assertNotEqual(tuple(sent[0][45, 40]), tuple(sent[0][45, 120]))
+
     def test_magic_loop_replays_a_frozen_seamless_loop(self):
         import time
         import types
@@ -1819,6 +1905,12 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("t")
                 await pilot.pause()
                 self.assertFalse(app.state.snapshot()["tracking_enabled"])
+
+                # The Flip Camera switch mirrors the camera feed through the
+                # shared state (no hotkey by design).
+                app.query_one("#sw-cam-flip", tui.Switch).value = True
+                await pilot.pause()
+                self.assertTrue(app.state.snapshot()["cam_flip"])
 
                 await pilot.press("c")
                 await pilot.pause()

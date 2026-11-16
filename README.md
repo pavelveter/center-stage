@@ -92,6 +92,8 @@ The TUI keeps things clean in a centered 72-column layout:
 - **TELEMETRY:** Live FPS, current zoom multiplier, `TRACKING` / `IDLE` status, active virtual camera device, and status notifications.
 - **CONTROLS:**
   - _Face Tracking_ + `Zoom` spring tuner
+  - _Face Tracking_ switch
+  - _Flip Camera_ switch (mirror the whole feed, selfie-style)
   - _Pan Smoothing_ EMA tuner
   - _LUT Grading_ + `Scale` tuner + `.cube` selector
   - _GLSL Shader_ + `.glsl` selector

@@ -13,6 +13,7 @@ class SharedState:
     """
 
     TUNABLE = (
+        "cam_flip",
         "tracking_enabled",
         "zoom",
         "smoothing",

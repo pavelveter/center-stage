@@ -43,6 +43,7 @@ from state import SharedState
 # the FEATURES loop, but stay here so Changed messages update the state.
 SWITCHES = {
     "sw-tracking": ("Face Tracking", "tracking_enabled"),
+    "sw-cam-flip": ("Flip Camera", "cam_flip"),
     "sw-lut": ("LUT Grading", "lut_enabled"),
     "sw-shader": ("GLSL Shader", "shader_enabled"),
     "sw-sharpen": ("Smart Sharpen", "sharpen_enabled"),
@@ -229,6 +230,7 @@ class HyperStageApp(App):
             yield from self.switch_row(
                 "Pan Smoothing", None, values, tuner="smoothing", tuner_name=""
             )
+            yield from self.switch_row("Flip Camera", "sw-cam-flip", values)
             yield from self.switch_row(
                 "LUT Grading", "sw-lut", values, tuner="lutscale"
             )

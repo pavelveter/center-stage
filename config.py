@@ -10,6 +10,7 @@ import tempfile
 # flows through the same validate/override path.
 DEFAULTS = {
     "camera_index": 1,          # AVFoundation device index (0 = FaceTime on macOS)
+    "cam_flip": False,          # mirror the camera feed horizontally (selfie view)
     "in_w": 2560,               # requested capture width
     "in_h": 1440,               # requested capture height
     "out_w": 1920,              # published virtual-camera width
@@ -53,7 +54,7 @@ DEFAULTS = {
 # load_config and save_config use this single table, so reading and writing
 # settings can never drift apart.
 INI_MAP = {
-    "camera": {"index": "camera_index"},
+    "camera": {"index": "camera_index", "flip": "cam_flip"},
     "capture": {
         "in_width": "in_w",
         "in_height": "in_h",

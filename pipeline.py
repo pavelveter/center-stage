@@ -205,6 +205,10 @@ class VideoPipeline(threading.Thread):
                 frame = np.ascontiguousarray(frame)
                 consecutive_errors = 0
                 state = self.state.snapshot()
+                if state["cam_flip"]:
+                    # Mirror the raw feed first, so tracking, the crop and
+                    # the PiP window all operate on the published view.
+                    frame = cv2.flip(frame, 1)
                 base_zoom = max(1.0, float(state["zoom"]))
 
                 magic_on = bool(state["magic_loop_enabled"])
