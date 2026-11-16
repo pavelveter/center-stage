@@ -26,7 +26,7 @@ from magic_loop import (
     MAGIC_LOOP_GUARD_SECONDS,
     MagicLoopBuffer,
 )
-from pipmode import PIP_ANIMATION_SECONDS, compose_pip, compose_pip_rect, pip_transition_rect
+from pipmode import compose_pip, compose_pip_rect, pip_transition_rect
 from shaders import MultiShader, ShaderEngine, load_shader
 from state import SharedState
 from tracking import (
@@ -181,7 +181,8 @@ class VideoPipeline(threading.Thread):
         pip_content = None
         # PiP zoom animation: 1.0 is the settled corner window (PiP on),
         # 0.0 the full-frame webcam (PiP off); it eases toward its target
-        # over PIP_ANIMATION_SECONDS, reversing smoothly mid-flight.
+        # over cfg["pip_animation"] seconds, reversing smoothly mid-flight.
+        # A zero/negative duration snaps instantly.
         pip_anim_progress = 1.0 if cfg["pip_enabled"] else 0.0
         pip_anim_ts = time.monotonic()
 
@@ -401,9 +402,11 @@ class VideoPipeline(threading.Thread):
                 # PiP slide mode composites last: LUTs, shaders and sharpening
                 # grade the webcam feed, never the static background image.
                 # Toggling PiP zooms the webcam window to/from the corner
-                # over PIP_ANIMATION_SECONDS instead of cutting.
+                # over the configured pip_animation seconds instead of cutting.
                 now_ts = time.monotonic()
-                anim_step = (now_ts - pip_anim_ts) / PIP_ANIMATION_SECONDS
+                anim_step = (now_ts - pip_anim_ts) / max(
+                    float(cfg["pip_animation"]), 0.001
+                )
                 pip_anim_ts = now_ts
                 pip_target = 1.0 if state["pip_enabled"] else 0.0
                 if pip_anim_progress < pip_target:

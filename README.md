@@ -72,7 +72,7 @@ Presenting? Turn on **PiP Slide Mode** with `p` (or `з`):
 2. **Tiny You:** The live webcam shrinks to 25% of the frame and parks an equal padding (margin, as a fraction of the frame width) from the visible picture's edges — arrows move it one axis at a time (`↑`/`↓` pick top/bottom, `←`/`→` pick left/right, the other axis stays put). Toggling PiP zooms the webcam smoothly to/from the corner over 3 seconds instead of cutting. Seeing your slide mirrored in the call? Flip on **PiP Flip** right below the toggle.
 3. **Grade the feed, not the slide:** LUTs, shaders and sharpening keep applying to your camera feed only; the background image stays pristine.
 
-Scale, edge margin and default corner live in the `[pip]` section of `hyper-stage.ini`.
+Scale, edge margin, zoom animation duration and default corner live in the `[pip]` section of `hyper-stage.ini` (`animation` is seconds; `0` snaps instantly).
 
 ---
 

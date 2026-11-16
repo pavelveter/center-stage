@@ -71,6 +71,17 @@ class TestLoadConfig(unittest.TestCase):
         finally:
             os.remove(path)
 
+    def test_pip_animation_override(self):
+        import tempfile, os
+        fd, path = tempfile.mkstemp(suffix=".ini")
+        with os.fdopen(fd, "w") as f:
+            f.write("[pip]\nanimation = 1.5\n")
+        try:
+            cfg = load_config(path)
+            self.assertEqual(cfg["pip_animation"], 1.5)
+        finally:
+            os.remove(path)
+
 
 class TestLoadLut(unittest.TestCase):
     def test_loads_cube(self):

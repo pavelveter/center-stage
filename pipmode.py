@@ -80,11 +80,6 @@ def load_pip_image(path, size):
     return canvas, (x, y, scaled_w, scaled_h)
 
 
-# Duration of the zoom animation from full frame to the PiP corner and
-# back, in seconds.
-PIP_ANIMATION_SECONDS = 3.0
-
-
 def pip_corner_rect(corner, scale, margin, out_w, out_h, content_rect=None):
     """(x, y, w, h) of the webcam window for one corner.
 
