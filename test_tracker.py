@@ -1405,6 +1405,54 @@ class TestVideoPipeline(unittest.TestCase):
         # ...and the stored background itself was never mutated.
         self.assertEqual(tuple(background[45, 120]), (255, 10, 10))
 
+    def test_pip_transition_rect_eases_from_full_frame_to_corner(self):
+        from pipmode import (
+            CORNER_BR,
+            compose_pip_rect,
+            pip_corner_rect,
+            pip_transition_rect,
+        )
+
+        w, h = 160, 90
+        corner = pip_corner_rect(CORNER_BR, 0.25, 0.05, w, h)
+        # progress 0: the full frame (PiP off)...
+        self.assertEqual(pip_transition_rect(0.0, CORNER_BR, 0.25, 0.05, w, h),
+                         (0, 0, w, h))
+        # ...progress 1: the exact corner window (PiP on).
+        self.assertEqual(pip_transition_rect(1.0, CORNER_BR, 0.25, 0.05, w, h),
+                         corner)
+        # Mid-flight the rect sits between the two and stays in frame.
+        for progress in (0.25, 0.5, 0.75):
+            x, y, rw, rh = pip_transition_rect(
+                progress, CORNER_BR, 0.25, 0.05, w, h
+            )
+            self.assertGreater(x, 0)
+            self.assertLess(x + rw, w)
+            self.assertGreater(y, 0)
+            self.assertLess(y + rh, h)
+            self.assertGreater(rw, corner[2])
+            self.assertLess(rw, w)
+
+        # Composing at the corner rect matches the settled compose_pip,
+        # and at the full-frame rect just pastes the webcam over the bg.
+        background = np.full((h, w, 3), 10, dtype=np.uint8)
+        webcam = np.full((30, 30, 3), 200, dtype=np.uint8)
+        settled = compose_pip_rect(
+            np.zeros((h, w, 3), dtype=np.uint8), background, webcam, corner
+        )
+        from pipmode import compose_pip
+
+        self.assertTrue(
+            (settled == compose_pip(np.zeros((h, w, 3), dtype=np.uint8),
+                                    background, webcam, CORNER_BR, 0.25, 0.05)).all()
+        )
+        full = compose_pip_rect(
+            np.zeros((h, w, 3), dtype=np.uint8), background, webcam, (0, 0, w, h)
+        )
+        self.assertEqual(tuple(full[45, 45]), (200, 200, 200))
+        # The background was never mutated.
+        self.assertEqual(tuple(background[45, 45]), (10, 10, 10))
+
     def test_magic_loop_replays_a_frozen_seamless_loop(self):
         import time
         import types

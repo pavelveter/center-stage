@@ -26,7 +26,7 @@ from magic_loop import (
     MAGIC_LOOP_GUARD_SECONDS,
     MagicLoopBuffer,
 )
-from pipmode import compose_pip
+from pipmode import PIP_ANIMATION_SECONDS, compose_pip, compose_pip_rect, pip_transition_rect
 from shaders import MultiShader, ShaderEngine, load_shader
 from state import SharedState
 from tracking import (
@@ -175,6 +175,11 @@ class VideoPipeline(threading.Thread):
         pip_display = None
         pip_display_src = None
         pip_flip_prev = None
+        # PiP zoom animation: 1.0 is the settled corner window (PiP on),
+        # 0.0 the full-frame webcam (PiP off); it eases toward its target
+        # over PIP_ANIMATION_SECONDS, reversing smoothly mid-flight.
+        pip_anim_progress = 1.0 if cfg["pip_enabled"] else 0.0
+        pip_anim_ts = time.monotonic()
 
         while not self._stop_event.is_set():
             try:
@@ -391,16 +396,24 @@ class VideoPipeline(threading.Thread):
 
                 # PiP slide mode composites last: LUTs, shaders and sharpening
                 # grade the webcam feed, never the static background image.
-                if state["pip_enabled"]:
-                    background = self.state.pip_frame
-                    if background is not None:
-                        flip = bool(state["pip_flip"])
-                        if background is not pip_display_src or flip != pip_flip_prev:
-                            pip_display = (
-                                cv2.flip(background, 1) if flip else background
-                            )
-                            pip_display_src = background
-                            pip_flip_prev = flip
+                # Toggling PiP zooms the webcam window to/from the corner
+                # over PIP_ANIMATION_SECONDS instead of cutting.
+                now_ts = time.monotonic()
+                anim_step = (now_ts - pip_anim_ts) / PIP_ANIMATION_SECONDS
+                pip_anim_ts = now_ts
+                pip_target = 1.0 if state["pip_enabled"] else 0.0
+                if pip_anim_progress < pip_target:
+                    pip_anim_progress = min(pip_anim_progress + anim_step, pip_target)
+                elif pip_anim_progress > pip_target:
+                    pip_anim_progress = max(pip_anim_progress - anim_step, pip_target)
+                background = self.state.pip_frame
+                if pip_anim_progress > 0.0 and background is not None:
+                    flip = bool(state["pip_flip"])
+                    if background is not pip_display_src or flip != pip_flip_prev:
+                        pip_display = cv2.flip(background, 1) if flip else background
+                        pip_display_src = background
+                        pip_flip_prev = flip
+                    if pip_anim_progress >= 1.0:
                         out_frame = compose_pip(
                             out_frame,
                             pip_display,
@@ -408,6 +421,19 @@ class VideoPipeline(threading.Thread):
                             state["pip_corner"],
                             float(cfg["pip_scale"]),
                             float(cfg["pip_margin"]),
+                        )
+                    else:
+                        h, w = out_frame.shape[:2]
+                        rect = pip_transition_rect(
+                            pip_anim_progress,
+                            state["pip_corner"],
+                            float(cfg["pip_scale"]),
+                            float(cfg["pip_margin"]),
+                            w,
+                            h,
+                        )
+                        out_frame = compose_pip_rect(
+                            out_frame, pip_display, out_frame, rect
                         )
 
                 cam.send(out_frame)

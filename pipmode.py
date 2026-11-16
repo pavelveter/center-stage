@@ -79,6 +79,11 @@ def load_pip_image(path, size):
     return canvas
 
 
+# Duration of the zoom animation from full frame to the PiP corner and
+# back, in seconds.
+PIP_ANIMATION_SECONDS = 3.0
+
+
 def pip_corner_rect(corner, scale, margin, out_w, out_h):
     """(x, y, w, h) of the webcam window for one corner.
 
@@ -95,6 +100,37 @@ def pip_corner_rect(corner, scale, margin, out_w, out_h):
     return x, y, w, h
 
 
+def pip_transition_rect(progress, corner, scale, margin, out_w, out_h):
+    """(x, y, w, h) of the webcam window mid-animation.
+
+    progress 0.0 is the full output frame (PiP off), 1.0 the corner
+    window (PiP on); in between the rect is eased with a smoothstep and
+    always stays inside the frame.
+    """
+    x, y, w, h = pip_corner_rect(corner, scale, margin, out_w, out_h)
+    eased = progress * progress * (3.0 - 2.0 * progress)
+    rx = round(x * eased)
+    ry = round(y * eased)
+    rw = max(1, min(out_w, round(out_w + (w - out_w) * eased)))
+    rh = max(1, min(out_h, round(out_h + (h - out_h) * eased)))
+    return rx, ry, rw, rh
+
+
+def compose_pip_rect(canvas, background, webcam, rect):
+    """Background image with the webcam pasted at an explicit (x, y, w, h)."""
+    bg = background
+    if bg.shape[:2] != canvas.shape[:2]:
+        bg = cv2.resize(
+            bg, (canvas.shape[1], canvas.shape[0]), interpolation=cv2.INTER_LINEAR
+        )
+    out = bg.copy()
+    x, y, pw, ph = rect
+    if webcam.shape[:2] != (ph, pw):
+        webcam = cv2.resize(webcam, (pw, ph), interpolation=cv2.INTER_AREA)
+    out[y : y + ph, x : x + pw] = webcam
+    return out
+
+
 def compose_pip(canvas, background, webcam, corner, scale, margin):
     """Background image plus the webcam window snapped into one corner.
 
@@ -102,18 +138,9 @@ def compose_pip(canvas, background, webcam, corner, scale, margin):
     is copied, never mutated, because SharedState shares it with the video
     thread. The webcam frame is resized to the corner window size.
     """
-    bg = background
-    if bg.shape[:2] != canvas.shape[:2]:
-        bg = cv2.resize(
-            bg, (canvas.shape[1], canvas.shape[0]), interpolation=cv2.INTER_LINEAR
-        )
-    out = bg.copy()
     h, w = canvas.shape[:2]
-    x, y, pw, ph = pip_corner_rect(corner, scale, margin, w, h)
-    if webcam.shape[:2] != (ph, pw):
-        webcam = cv2.resize(webcam, (pw, ph), interpolation=cv2.INTER_AREA)
-    out[y : y + ph, x : x + pw] = webcam
-    return out
+    rect = pip_corner_rect(corner, scale, margin, w, h)
+    return compose_pip_rect(canvas, background, webcam, rect)
 
 
 def pick_image_dialog(title="Select a slide or meme image"):
