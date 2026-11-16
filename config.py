@@ -114,6 +114,7 @@ INI_MAP = {
     "appearance": {"theme": "theme"},
     "text": {
         "enabled": "text_enabled",
+        "text": "text_string",
         "font_face": "text_font_face",
         "font_scale": "text_font_scale",
         "thickness": "text_thickness",

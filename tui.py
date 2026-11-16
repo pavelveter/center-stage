@@ -235,9 +235,8 @@ class HyperStageApp(App):
                 "Pan Smoothing", None, values, tuner="smoothing", tuner_name=""
             )
             yield from self.switch_row("Flip Camera", "sw-cam-flip", values)
+            yield from self.switch_row("Text Overlay", "sw-text", values)
             with Horizontal(classes="row"):
-                yield Label("Text Overlay", classes="name")
-                yield Switch(value=bool(values["text_enabled"]), id="sw-text")
                 yield Input(
                     value=str(values["text_string"]),
                     placeholder="type text, Enter to apply",

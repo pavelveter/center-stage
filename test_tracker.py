@@ -127,13 +127,14 @@ class TestLoadConfig(unittest.TestCase):
         fd, path = tempfile.mkstemp(suffix=".ini")
         with os.fdopen(fd, "w") as f:
             f.write(
-                "[text]\nenabled = false\nfont_face = Nothing Font C\n"
+                "[text]\nenabled = false\ntext = Hello world\nfont_face = Nothing Font C\n"
                 "font_scale = 2.0\nthickness = 4\npadding = 80\n"
                 "color_start = #112233\ncolor_end = #aabbcc\n"
             )
         try:
             cfg = load_config(path)
             self.assertFalse(cfg["text_enabled"])
+            self.assertEqual(cfg["text_string"], "Hello world")
             self.assertEqual(cfg["text_font_face"], "Nothing Font C")
             self.assertEqual(cfg["text_font_scale"], 2.0)
             self.assertEqual(cfg["text_thickness"], 4)
@@ -141,7 +142,9 @@ class TestLoadConfig(unittest.TestCase):
             self.assertEqual(cfg["text_color_start"], "#112233")
             self.assertEqual(cfg["text_color_end"], "#aabbcc")
             save_config(path, cfg)
-            self.assertEqual(load_config(path)["text_padding"], 80)
+            again = load_config(path)
+            self.assertEqual(again["text_padding"], 80)
+            self.assertEqual(again["text_string"], "Hello world")
         finally:
             os.remove(path)
 
@@ -1989,6 +1992,7 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("i")
                 await pilot.pause()
                 self.assertTrue(app.query_one("#text-input", tui.Input).has_focus)
+                self.assertEqual(app.query_one("#text-input", tui.Input).size.width, 69)
                 for char in "hello":
                     await pilot.press(char)
                 await pilot.press("enter")

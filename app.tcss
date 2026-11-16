@@ -3,7 +3,7 @@ Screen {
 }
 #panel {
     width: 100%;
-    max-width: 72;
+    max-width: 74;
     height: 1fr;
     border: round $primary;
     padding: 0 1 1 1;
@@ -68,8 +68,8 @@ Screen {
     margin: 0 1;
 }
 #text-input {
-    width: 34;
-    min-width: 34;
+    width: 71;
+    min-width: 69;
     margin: 0;
 }
 #lut-select,
