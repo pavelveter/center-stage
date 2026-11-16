@@ -2354,9 +2354,9 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                     # ...and digits jump inside the current folder (2 ->
                     # second entry of its folder).
                     app.apply_pip_image(second)
-                    await pilot.pause()
+                    await pilot.pause(0.2)
                     await pilot.press("2")
-                    await pilot.pause()
+                    await pilot.pause(0.2)
                     self.assertEqual(app.state.snapshot()["pip_image"], image)
         finally:
             tui.VideoPipeline = original
