@@ -9,12 +9,60 @@ from pipeline import *  # noqa: F401,F403
 from pipmode import *  # noqa: F401,F403
 from shaders import *  # noqa: F401,F403
 from state import *  # noqa: F401,F403
+from textoverlay import apply_text_overlay, parse_color, resolve_font  # noqa: F401
 from tracking import *  # noqa: F401,F403
 
+import numpy as np  # noqa: F401
 import cv2  # noqa: F401
 import pyvirtualcam  # noqa: F401
 from mediapipe.tasks import python as mp_python  # noqa: F401
 from mediapipe.tasks.python import vision  # noqa: F401
+
+
+class TestTextOverlay(unittest.TestCase):
+    @staticmethod
+    def values(**overrides):
+        cfg = dict(DEFAULTS)
+        cfg["text_string"] = "Hello"
+        cfg.update(overrides)
+        return cfg
+
+    def test_parse_color_and_font_resolution(self):
+        self.assertEqual(parse_color("#ff00aa"), (255, 0, 170))
+        self.assertEqual(parse_color("garbage"), (255, 255, 255))
+        # The configured TTF is a real font on this machine.
+        font = resolve_font("Nothing Font C")
+        if font:
+            self.assertTrue(font.lower().endswith((".ttf", ".otf")))
+        self.assertIsNone(resolve_font("no-such-font-xyz"))
+
+    def test_overlay_is_centered_with_horizontal_gradient(self):
+        frame = np.zeros((120, 320, 3), dtype=np.uint8)
+        apply_text_overlay(frame, self.values())
+        ys, xs = np.where(frame.any(axis=2))
+        self.assertGreater(len(xs), 0)
+        # Centered: the bounding box midpoint is near the frame midpoint.
+        self.assertLess(abs((xs.min() + xs.max()) / 2 - 160), 8)
+        self.assertLess(abs((ys.min() + ys.max()) / 2 - 60), 8)
+        # Gradient: text pixels on the left are closer to the start color,
+        # ones on the right closer to the end color.
+        start = np.array(parse_color(DEFAULTS["text_color_start"])[::-1], dtype=int)
+        end = np.array(parse_color(DEFAULTS["text_color_end"])[::-1], dtype=int)
+        left_px = frame[ys, xs][xs < 160].astype(int)
+        right_px = frame[ys, xs][xs >= 160].astype(int)
+        self.assertLess(np.abs(left_px - start).sum(), np.abs(left_px - end).sum())
+        self.assertLess(np.abs(right_px - end).sum(), np.abs(right_px - start).sum())
+
+    def test_long_text_shrinks_to_fit_and_disabled_leaves_frame_clean(self):
+        frame = np.zeros((90, 160, 3), dtype=np.uint8)
+        apply_text_overlay(frame, self.values(text_string="A very long line of text"))
+        ys, xs = np.where(frame.any(axis=2))
+        self.assertGreaterEqual(xs.min(), DEFAULTS["text_padding"] - 8)
+        self.assertLessEqual(xs.max(), 160 - DEFAULTS["text_padding"] + 8)
+        clean = np.zeros_like(frame)
+        apply_text_overlay(clean, self.values(text_enabled=False))
+        apply_text_overlay(clean, self.values(text_string=""))
+        self.assertFalse(clean.any())
 
 
 class TestCropOrigin(unittest.TestCase):
@@ -69,6 +117,31 @@ class TestLoadConfig(unittest.TestCase):
             self.assertEqual(cfg["camera_index"], 3)
             self.assertTrue(cfg["cam_flip"])
             self.assertEqual(cfg["zoom"], 2.0)
+        finally:
+            os.remove(path)
+
+    def test_text_config_round_trips_through_ini(self):
+        import os
+        import tempfile
+
+        fd, path = tempfile.mkstemp(suffix=".ini")
+        with os.fdopen(fd, "w") as f:
+            f.write(
+                "[text]\nenabled = false\nfont_face = Nothing Font C\n"
+                "font_scale = 2.0\nthickness = 4\npadding = 80\n"
+                "color_start = #112233\ncolor_end = #aabbcc\n"
+            )
+        try:
+            cfg = load_config(path)
+            self.assertFalse(cfg["text_enabled"])
+            self.assertEqual(cfg["text_font_face"], "Nothing Font C")
+            self.assertEqual(cfg["text_font_scale"], 2.0)
+            self.assertEqual(cfg["text_thickness"], 4)
+            self.assertEqual(cfg["text_padding"], 80)
+            self.assertEqual(cfg["text_color_start"], "#112233")
+            self.assertEqual(cfg["text_color_end"], "#aabbcc")
+            save_config(path, cfg)
+            self.assertEqual(load_config(path)["text_padding"], 80)
         finally:
             os.remove(path)
 
@@ -1912,6 +1985,17 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 self.assertTrue(app.state.snapshot()["cam_flip"])
 
+                # i/sh focus the text field; Enter publishes the text string.
+                await pilot.press("i")
+                await pilot.pause()
+                self.assertTrue(app.query_one("#text-input", tui.Input).has_focus)
+                for char in "hello":
+                    await pilot.press(char)
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(app.state.snapshot()["text_string"], "hello")
+                self.assertFalse(app.state.snapshot()["tracking_enabled"])
+
                 await pilot.press("c")
                 await pilot.pause()
                 self.assertTrue(app.state.snapshot()["lut_enabled"])
@@ -2444,7 +2528,11 @@ class TestTui(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(app.state.snapshot()["pip_image"], other)
 
                     # ...and digits jump inside the current folder (2 ->
-                    # second entry of its folder).
+                    # second entry of its folder). Blur the Select first so
+                    # a stray option-list overlay cannot swallow the digit.
+                    await pilot.press("escape")
+                    await pilot.pause()
+                    app.query_one("#sw-pip-flip", tui.Switch).focus()
                     app.apply_pip_image(second)
                     await pilot.pause(0.2)
                     await pilot.press("2")

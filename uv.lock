@@ -275,6 +275,7 @@ dependencies = [
     { name = "moderngl" },
     { name = "numpy" },
     { name = "opencv-python" },
+    { name = "pillow" },
     { name = "pyvirtualcam" },
     { name = "textual" },
 ]
@@ -285,6 +286,7 @@ requires-dist = [
     { name = "moderngl", specifier = ">=5.13.0" },
     { name = "numpy", specifier = ">=2.5.4" },
     { name = "opencv-python", specifier = ">=5.0.0.93" },
+    { name = "pillow", specifier = ">=13.0.0" },
     { name = "pyvirtualcam", specifier = ">=0.15.0" },
     { name = "textual", specifier = ">=8.2.8" },
 ]

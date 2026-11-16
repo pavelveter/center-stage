@@ -44,6 +44,7 @@ from state import SharedState
 SWITCHES = {
     "sw-tracking": ("Face Tracking", "tracking_enabled"),
     "sw-cam-flip": ("Flip Camera", "cam_flip"),
+    "sw-text": ("Text Overlay", "text_enabled"),
     "sw-lut": ("LUT Grading", "lut_enabled"),
     "sw-shader": ("GLSL Shader", "shader_enabled"),
     "sw-sharpen": ("Smart Sharpen", "sharpen_enabled"),
@@ -101,6 +102,9 @@ class HyperStageApp(App):
         Binding("f", "toggle_deep_fry", "Fry", priority=True),
         Binding("p", "toggle_pip", "PiP", priority=True),
         Binding("r", "reload_files", "Reload", priority=True),
+        # Focus the text overlay input (Latin and ЙЦУКЕН positions).
+        Binding("i", "focus_text_input", "Text", priority=True),
+        Binding("ш", "focus_text_input", show=False, priority=True),
         # Arrow keys move the PiP window along one axis each; up/down change
         # the vertical side, left/right the horizontal one. Horizontal sides
         # are swapped: the call app mirrors the self-preview, so the arrow
@@ -231,6 +235,14 @@ class HyperStageApp(App):
                 "Pan Smoothing", None, values, tuner="smoothing", tuner_name=""
             )
             yield from self.switch_row("Flip Camera", "sw-cam-flip", values)
+            with Horizontal(classes="row"):
+                yield Label("Text Overlay", classes="name")
+                yield Switch(value=bool(values["text_enabled"]), id="sw-text")
+                yield Input(
+                    value=str(values["text_string"]),
+                    placeholder="type text, Enter to apply",
+                    id="text-input",
+                )
             yield from self.switch_row(
                 "LUT Grading", "sw-lut", values, tuner="lutscale"
             )
@@ -772,7 +784,25 @@ class HyperStageApp(App):
             self.apply_tuning(suffix, self.get_tuning(suffix) + step * direction)
             return
 
+    async def _check_bindings(self, key: str, priority: bool = False) -> bool:
+        """Let the text field receive printable keys instead of hotkeys."""
+        if priority and key not in ("escape", "tab", "shift+tab"):
+            focused = self.focused
+            if isinstance(focused, Input) and focused.id == "text-input":
+                return False
+        return await super()._check_bindings(key, priority=priority)
+
+    def action_focus_text_input(self) -> None:
+        """Jump to the overlay text field (i / ш)."""
+        self.query_one("#text-input", Input).focus()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "text-input":
+            text = event.value.strip()
+            self.state.update(text_string=text)
+            self.set_notice(f"text overlay: {text or 'cleared'}")
+            event.input.blur()
+            return
         suffix = (event.input.id or "").removeprefix("in-")
         if suffix not in TUNING:
             return

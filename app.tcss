@@ -67,6 +67,11 @@ Screen {
     padding: 0 1;
     margin: 0 1;
 }
+#text-input {
+    width: 34;
+    min-width: 34;
+    margin: 0;
+}
 #lut-select,
 #shader-select,
 #pip-select {

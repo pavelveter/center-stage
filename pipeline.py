@@ -29,6 +29,7 @@ from magic_loop import (
 from pipmode import compose_pip, compose_pip_rect, pip_transition_rect
 from shaders import MultiShader, ShaderEngine, load_shader
 from state import SharedState
+from textoverlay import apply_text_overlay
 from tracking import (
     DETECT_H,
     DETECT_W,
@@ -442,6 +443,10 @@ class VideoPipeline(threading.Thread):
                         out_frame = compose_pip_rect(
                             out_frame, pip_display, out_frame, rect
                         )
+
+                # Text overlay is the last layer: centered on the whole
+                # published frame, on top of the graded feed and PiP.
+                apply_text_overlay(out_frame, state)
 
                 cam.send(out_frame)
                 cam.sleep_until_next_frame()

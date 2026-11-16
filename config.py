@@ -11,6 +11,14 @@ import tempfile
 DEFAULTS = {
     "camera_index": 1,          # AVFoundation device index (0 = FaceTime on macOS)
     "cam_flip": False,          # mirror the camera feed horizontally (selfie view)
+    "text_enabled": True,       # draw the centered text overlay when text is set
+    "text_string": "",          # active overlay text (Enter in the TUI input)
+    "text_font_face": "Nothing Font C",  # TTF name/path resolved by textoverlay
+    "text_font_scale": 1.5,     # base font scale for the overlay
+    "text_thickness": 3,        # text outline/stroke width in pixels
+    "text_padding": 50,         # minimum gap from the frame's left/right edges
+    "text_color_start": "#FF5F6D",       # gradient start (left)
+    "text_color_end": "#FFC371",         # gradient end (right)
     "in_w": 2560,               # requested capture width
     "in_h": 1440,               # requested capture height
     "out_w": 1920,              # published virtual-camera width
@@ -104,6 +112,15 @@ INI_MAP = {
         "corner": "pip_corner",
     },
     "appearance": {"theme": "theme"},
+    "text": {
+        "enabled": "text_enabled",
+        "font_face": "text_font_face",
+        "font_scale": "text_font_scale",
+        "thickness": "text_thickness",
+        "padding": "text_padding",
+        "color_start": "text_color_start",
+        "color_end": "text_color_end",
+    },
 }
 
 

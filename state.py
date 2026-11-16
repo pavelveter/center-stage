@@ -14,6 +14,14 @@ class SharedState:
 
     TUNABLE = (
         "cam_flip",
+        "text_enabled",
+        "text_string",
+        "text_font_face",
+        "text_font_scale",
+        "text_thickness",
+        "text_padding",
+        "text_color_start",
+        "text_color_end",
         "tracking_enabled",
         "zoom",
         "smoothing",

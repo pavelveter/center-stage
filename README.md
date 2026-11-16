@@ -94,12 +94,19 @@ The TUI keeps things clean in a centered 72-column layout:
   - _Face Tracking_ + `Zoom` spring tuner
   - _Face Tracking_ switch
   - _Flip Camera_ switch (mirror the whole feed, selfie-style)
+  - _Text Overlay_ switch + text field (`i` / `ш` to focus, Enter to publish) with `[text]` ini settings (font, scale, thickness, edge padding, gradient colors)
   - _Pan Smoothing_ EMA tuner
   - _LUT Grading_ + `Scale` tuner + `.cube` selector
   - _GLSL Shader_ + `.glsl` selector
   - _Smart Sharpen_ + `Strength` tuner (edge-gated so you don't look deep-fried unless you want to)
   - _Time Loop (1s)_, _Magic Loop (AFK)_, and _Deep Fry_ switches
   - _PiP Slide_ + image selector + `Pick` button (native file dialog), and _PiP Flip_ mirror toggle
+
+---
+
+## 🔤 Text Overlay
+
+The `[text]` section of `hyper-stage.ini` controls the centered caption: `enabled`, `font_face` (TTF name or path, e.g. `Nothing Font C`), `font_scale`, `thickness`, `padding` (minimum gap from the frame edges) and a `color_start` → `color_end` `#RRGGBB` gradient. Type in the TUI text field (`i` / `ш`) and hit Enter to publish it. Long text automatically shrinks to fit the safe zone.
 
 ---
 
