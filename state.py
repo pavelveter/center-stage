@@ -54,6 +54,8 @@ class SharedState:
         self._values = {key: cfg[key] for key in self.TUNABLE}
         self._telemetry = {
             "fps": 0.0,
+            "capture_fps": 0.0,
+            "render_fps": 0.0,
             "zoom": float(cfg["zoom"]),
             "tracking": False,
             "device": "starting",

@@ -606,3 +606,30 @@ class ShaderEngine:
         if entry is None:
             return frame_bgr
         return entry.run(self._fbo, frame_bgr)
+
+    def reload(self):
+        """Drop cached programs so the next frame recompiles from disk."""
+        for path, entry in list(self._programs.items()):
+            if isinstance(entry, MultiShader):
+                entry.close()
+            elif entry:
+                entry[1].release()
+                entry[0].release()
+            self._programs.pop(path, None)
+        self._broken.clear()
+
+    def release(self):
+        """Release every GL object; must run on the thread that created them."""
+        for entry in self._programs.values():
+            if isinstance(entry, MultiShader):
+                entry.close()
+            elif entry:
+                entry[1].release()  # quad VAO
+                entry[0].release()  # program
+        self._programs.clear()
+        self._aux.clear()
+        self._buffer = self._fbo = self._texture = None
+        if self._ctx is not None:
+            self._ctx.release()
+            self._ctx = None
+        self._size = (0, 0)

@@ -355,12 +355,16 @@ class HyperStageApp(App):
 
     def refresh_telemetry(self) -> None:
         """Repaint the single telemetry line from the shared snapshot."""
+        # Workers publish raw counters; the TUI's existing 0.25 s timer copies
+        # them into shared telemetry without ever waiting on a worker.
+        stats = self.pipeline.stats() if hasattr(self.pipeline, "stats") else {}
+        self.state.set_telemetry(**stats)
         values = self.state.telemetry()
         tracking = "TRACKING" if values["tracking"] else "IDLE"
         info = values["device"] if values["status"] == "running" else values["status"]
         line = (
-            f"FPS {values['fps']:.1f} | Zoom {values['zoom']:.2f}x | "
-            f"{tracking} | {info}"
+            f"CAP {values['capture_fps']:.1f} | RENDER {values['render_fps']:.1f} | "
+            f"Zoom {values['zoom']:.2f}x | {tracking} | {info}"
         )
         try:
             self.query_one("#telemetry-body", Static).update(line)

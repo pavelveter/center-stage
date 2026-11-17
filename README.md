@@ -157,6 +157,39 @@ Run the test suite to verify nothing's broken:
 uv run python -m unittest discover
 ```
 
+Compare the old synchronous pipeline against the concurrent one with the
+hardware-free benchmark (synthetic 2560x1440 frames, mocked inference and
+virtual camera):
+
+```sh
+uv run python benchmark.py --frames 240
+```
+
+## 🧵 Concurrent pipeline and live validation
+
+Capture, face detection and rendering now run as three independent threads.
+The capture thread owns the webcam and publishes the newest frame into a
+one-slot mailbox; the detector owns MediaPipe and publishes immutable tracking
+snapshots; the renderer owns the OpenGL context, all effects and the virtual
+camera, paced by a monotonic 30 fps scheduler. There is no frame backlog and
+inference can never stall the output stream. The telemetry line shows actual
+**CAP** and **RENDER** rates (not the configured target).
+
+To validate on real hardware:
+
+1. Start normally (`./start.sh`) and confirm the telemetry shows `CAP ~30` and
+   `RENDER ~30`, with `running` and your virtual camera device name.
+2. Toggle Face Tracking off and on (`t`) while watching the debug line
+   (`tracking_debug = true` in `hyper-stage.ini`): detection age stays bounded
+   and the spring response is unchanged.
+3. Enable LUT, Shader, Smart Sharpen, PiP and Magic Loop in turn. Effect order
+   and output should match the previous release; only the frame cadence should
+   feel steadier.
+4. Quit with `q` and confirm the process exits within a few seconds - each
+   native resource is closed by its owning worker thread.
+5. For a before/after comparison, run `benchmark.py` on the same machine and
+   compare against the numbers recorded in `docs/specs/three-stage-pipeline.md`.
+
 ---
 
 ## 📄 License
