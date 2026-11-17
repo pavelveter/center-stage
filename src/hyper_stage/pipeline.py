@@ -12,10 +12,10 @@ import traceback
 
 import cv2
 
-from capture import CameraWorker
-from detector import DetectorWorker
-from framebus import LatestFrame, LatestTracking
-from renderer import FrameProcessor, RendererWorker
+from hyper_stage.capture import CameraWorker
+from hyper_stage.detector import DetectorWorker
+from hyper_stage.framebus import LatestFrame, LatestTracking
+from hyper_stage.renderer import FrameProcessor, RendererWorker
 
 
 class VideoPipeline:

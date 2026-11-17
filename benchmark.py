@@ -18,11 +18,11 @@ import numpy as np
 import pyvirtualcam
 from mediapipe.tasks.python import vision
 
-from config import DEFAULTS
-from detector import DetectorWorker
-from pipeline import VideoPipeline
-from renderer import FrameProcessor
-from state import SharedState
+from hyper_stage.config import DEFAULTS
+from hyper_stage.detector import DetectorWorker
+from hyper_stage.pipeline import VideoPipeline
+from hyper_stage.renderer import FrameProcessor
+from hyper_stage.state import SharedState
 
 INFERENCE_SECONDS = 0.028  # measured on this M1 with the cached BlazeFace model
 
@@ -190,7 +190,7 @@ def run_concurrent(cfg, frames):
     with (
         mock.patch.object(cv2, "VideoCapture", return_value=camera),
         mock.patch.object(pyvirtualcam, "Camera", return_value=vcam),
-        mock.patch("detector.ensure_model", return_value="mock"),
+        mock.patch("hyper_stage.detector.ensure_model", return_value="mock"),
         mock.patch.object(
             vision.FaceDetector, "create_from_options",
             return_value=DetectorContext(detector),

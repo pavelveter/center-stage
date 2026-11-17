@@ -6,8 +6,8 @@ import time
 import cv2
 import numpy as np
 
-from framebus import FrameEnvelope
-from metrics import RollingStats
+from hyper_stage.framebus import FrameEnvelope
+from hyper_stage.metrics import RollingStats
 
 
 class CameraWorker(threading.Thread):

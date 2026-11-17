@@ -7,19 +7,19 @@ import cv2
 import numpy as np
 import pyvirtualcam
 
-from effects import TimeLoop, apply_deep_fry, apply_smart_sharpen
-from lut import apply_lut
-from magic_loop import (
+from hyper_stage.effects import TimeLoop, apply_deep_fry, apply_smart_sharpen
+from hyper_stage.lut import apply_lut
+from hyper_stage.magic_loop import (
     MAGIC_LOOP_ENTRY_FADE_SECONDS,
     MAGIC_LOOP_EXIT_FADE_SECONDS,
     MAGIC_LOOP_GUARD_SECONDS,
     MagicLoopBuffer,
 )
-from metrics import RollingStats
-from pipmode import compose_pip, compose_pip_rect, pip_transition_rect
-from shaders import ShaderEngine
-from textoverlay import apply_text_overlay
-from tracking import PositionController, ZoomController, crop_origin
+from hyper_stage.metrics import RollingStats
+from hyper_stage.pipmode import compose_pip, compose_pip_rect, pip_transition_rect
+from hyper_stage.shaders import ShaderEngine
+from hyper_stage.textoverlay import apply_text_overlay
+from hyper_stage.tracking import PositionController, ZoomController, crop_origin
 
 
 class FrameProcessor:

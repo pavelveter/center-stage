@@ -1,4 +1,4 @@
-from cli import main
+from hyper_stage.cli import main
 
 
 if __name__ == "__main__":

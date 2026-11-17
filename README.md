@@ -1,4 +1,4 @@
-![hyper-stage banner](banner.png)
+![hyper-stage banner](docs/assets/banner.png)
 
 # hyper-stage 🎥✨
 
@@ -56,7 +56,7 @@ Click literally anything in the TUI (switches, dropdowns, `-`/`+` buttons, foote
 
 ## 🛠️ Dashboard Anatomy
 
-![hyper-stage tui](tui.png)
+![hyper-stage tui](docs/assets/tui.png)
 
 The TUI keeps things clean in a centered 74-column layout:
 
@@ -151,10 +151,16 @@ Change your TUI color theme anytime via the Textual command palette (`Ctrl+P` �
 - **Hardware:** Any webcam (defaults to index `1`; built-in FaceTime cam is usually `0`)
 - **Virtual Cam:** OBS Virtual Camera or `pyvirtualcam` macOS camera extension
 
-Run the test suite to verify nothing's broken:
+The application is an installable package under `src/hyper_stage/`. `uv sync`
+installs it in editable mode and provides the `hyper-stage` console script;
+`python main.py` and `./start.sh` continue to work from the repository root.
+Runtime data (`hyper-stage.ini`, `LUT/`, `shaders/`) stays at the root.
+
+Run the test suite (pytest, split into focused modules under `tests/`) to verify
+nothing's broken:
 
 ```sh
-uv run python -m unittest discover
+uv run pytest
 ```
 
 Compare the old synchronous pipeline against the concurrent one with the
@@ -165,9 +171,11 @@ virtual camera):
 uv run python benchmark.py --frames 240
 ```
 
+---
+
 ## 🧵 Concurrent pipeline and live validation
 
-Capture, face detection and rendering now run as three independent threads.
+Capture, face detection and rendering run as three independent threads.
 The capture thread owns the webcam and publishes the newest frame into a
 one-slot mailbox; the detector owns MediaPipe and publishes immutable tracking
 snapshots; the renderer owns the OpenGL context, all effects and the virtual
@@ -175,20 +183,72 @@ camera, paced by a monotonic 30 fps scheduler. There is no frame backlog and
 inference can never stall the output stream. The telemetry line shows actual
 **CAP** and **RENDER** rates (not the configured target).
 
-To validate on real hardware:
+```mermaid
+graph TD
+    %% Styles
+    classDef hardware fill:#2d3748,stroke:#cbd5e0,stroke-width:2px,color:#fff;
+    classDef worker fill:#2b6cb0,stroke:#63b3ed,stroke-width:2px,color:#fff;
+    classDef bus fill:#d69e2e,stroke:#f6e05e,stroke-width:2px,color:#000;
+    classDef render fill:#2f855a,stroke:#68d391,stroke-width:2px,color:#fff;
+    classDef fx fill:#9b2c2c,stroke:#fc8181,stroke-width:2px,color:#fff;
+    classDef ui fill:#553c9a,stroke:#d6bcfa,stroke-width:2px,color:#fff;
 
-1. Start normally (`./start.sh`) and confirm the telemetry shows `CAP ~30` and
-   `RENDER ~30`, with `running` and your virtual camera device name.
-2. Toggle Face Tracking off and on (`t`) while watching the debug line
-   (`tracking_debug = true` in `hyper-stage.ini`): detection age stays bounded
-   and the spring response is unchanged.
-3. Enable LUT, Shader, Smart Sharpen, PiP and Magic Loop in turn. Effect order
-   and output should match the previous release; only the frame cadence should
-   feel steadier.
-4. Quit with `q` and confirm the process exits within a few seconds - each
-   native resource is closed by its owning worker thread.
-5. For a before/after comparison, run `benchmark.py` on the same machine and
-   compare against the numbers recorded in `docs/specs/three-stage-pipeline.md`.
+    subgraph Hardware ["Camera & Environment"]
+        CAM["cv2.VideoCapture<br/>(Physical Camera)"]:::hardware
+    end
+
+    subgraph Pipeline ["Three-Stage Concurrent Pipeline (hyper-stage)"]
+        
+        subgraph Producer ["1. Capture Worker (capture.py)"]
+            PW["Producer Thread<br/>- Reads frames<br/>- Zero-copy read-only ndarray<br/>- Stamps capture_timestamp"]:::worker
+        end
+
+        BUS_FRAME["<b>FrameBus (framebus.py)</b><br/>Single-slot mailbox<br/>(Latest-frame-only / overwrites old)"]:::bus
+
+        subgraph Detector ["2. Detector Worker (detector.py)"]
+            DW["Detector Thread<br/>- MediaPipe FaceDetector<br/>- Skips frames (detect_every)<br/>- Replaces queue during inference"]:::worker
+        end
+
+        BUS_SNAP["<b>SnapshotBus (framebus.py)</b><br/>Single-slot mailbox<br/>(Filters out stale sequences)"]:::bus
+
+        subgraph Consumer ["3. Renderer Worker (renderer.py)"]
+            RW["Renderer Thread<br/>- Monotonic scheduler (30 FPS)<br/>- ModernGL & pyvirtualcam"]:::render
+
+            subgraph FrameProcessor ["FrameProcessor (Effect Pipeline)"]
+                FX1["1. Crop / Zoom / Pan<br/>(Spring controllers)"]:::fx
+                FX2["2. 3D LUT Color Grading<br/>(+ luma-only detail mode)"]:::fx
+                FX3["3. Smart Sharpen"]:::fx
+                FX4["4. GLSL Shaders / Packs<br/>(ModernGL headless GPU)"]:::fx
+                FX5["5. Deep Fry / Glitch"]:::fx
+                FX6["6. Time Loop / Magic Loop<br/>(AFK seamless buffer)"]:::fx
+                FX7["7. PiP Slide Mode<br/>(Background + corner webcam)"]:::fx
+                FX8["8. Text Overlay HUD<br/>(Gradient & auto-shrink)"]:::fx
+
+                FX1 --> FX2 --> FX3 --> FX4 --> FX5 --> FX6 --> FX7 --> FX8
+            end
+        end
+    end
+
+    subgraph Interface ["Management Interface"]
+        TUI["Textual TUI (tui.py)<br/>- SharedState (atomic lock)<br/>- Hotkeys & Auto-save to INI"]:::ui
+    end
+
+    %% Connections
+    CAM -->|cap.read| PW
+    PW -->|FrameEnvelope| BUS_FRAME
+    
+    BUS_FRAME -->|Fresh frame| DW
+    DW -->|TrackingSnapshot| BUS_SNAP
+    
+    BUS_FRAME -->|Frame for render| RW
+    BUS_SNAP -->|Latest face coordinates| RW
+    RW --> FrameProcessor
+    
+    TUI -.->|SharedState Tunables| RW
+    TUI -.->|SharedState| DW
+    
+    FrameProcessor -->|pyvirtualcam.send| VCAM["Virtual Camera<br/>(Zoom / Teams / Meet)"]:::hardware
+```
 
 ---
 

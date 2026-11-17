@@ -3,9 +3,9 @@
 import argparse
 import os
 
-from config import find_config_path, load_config
-from lut import resolve_lut_path
-from tracking import list_cameras
+from hyper_stage.config import find_config_path, load_config
+from hyper_stage.lut import resolve_lut_path
+from hyper_stage.tracking import list_cameras
 
 
 def parse_args(argv=None):
@@ -138,7 +138,7 @@ def main(argv=None):
         config_path = os.path.abspath("hyper-stage.ini")
 
     # Imported here so --list-cameras works even if the TUI stack is broken.
-    from tui import HyperStageApp
+    from hyper_stage.tui import HyperStageApp
 
     HyperStageApp(cfg, config_path, preview=args.preview).run()
 

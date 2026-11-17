@@ -9,9 +9,9 @@ import numpy as np
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
 
-from framebus import TrackingSnapshot
-from metrics import RollingStats
-from tracking import (
+from hyper_stage.framebus import TrackingSnapshot
+from hyper_stage.metrics import RollingStats
+from hyper_stage.tracking import (
     DETECT_H,
     DETECT_W,
     ensure_model,

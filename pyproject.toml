@@ -1,7 +1,11 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "hyper-stage"
 version = "0.1.0"
-description = "Add your description here"
+description = "Center Stage-style framing and live effects for a webcam"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -12,4 +16,28 @@ dependencies = [
     "pillow>=13.0.0",
     "pyvirtualcam>=0.15.0",
     "textual>=8.2.8",
+]
+
+[project.scripts]
+hyper-stage = "hyper_stage.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+packages = ["hyper_stage"]
+
+[tool.setuptools.package-data]
+hyper_stage = ["app.tcss"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+markers = [
+    "gpu: tests that need a working OpenGL context",
+    "slow: timing-based integration tests",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
 ]

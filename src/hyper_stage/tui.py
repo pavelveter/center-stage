@@ -25,18 +25,18 @@ from textual.widgets import (
     Switch,
 )
 
-from config import save_config
-from lut import build_lut_table, cycle_index, list_lut_files
-from pipeline import VideoPipeline
-from pipmode import (
+from hyper_stage.config import save_config
+from hyper_stage.lut import build_lut_table, cycle_index, list_lut_files
+from hyper_stage.pipeline import VideoPipeline
+from hyper_stage.pipmode import (
     CORNER_NAMES,
     is_image_file,
     list_pip_files,
     load_pip_image,
     pick_image_dialog,
 )
-from shaders import list_shader_files
-from state import SharedState
+from hyper_stage.shaders import list_shader_files
+from hyper_stage.state import SharedState
 
 # Widget id -> (label, SharedState key). Order defines the on-screen order.
 # sw-lut and sw-sharpen are composed inside their own blocks and skipped in
