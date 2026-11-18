@@ -88,6 +88,19 @@ Screen {
     height: 1;
     padding: 0 1;
 }
+/* Clickable LUT / shader / PiP steppers; align with their dropdown rows. */
+#btn-lut-prev,
+#btn-lut-next,
+#btn-shader-prev,
+#btn-shader-next {
+    margin: 0 0 1 1;
+}
+
+#btn-pip-prev,
+#btn-pip-next {
+    margin: 0 0 1 1;
+}
+
 #btn-pip-pick {
     width: 8;
     min-width: 8;

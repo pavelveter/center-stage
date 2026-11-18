@@ -27,6 +27,14 @@ from textual.widgets import (
 
 from hyper_stage.config import save_config
 from hyper_stage.lut import build_lut_table, cycle_index, list_lut_files
+from hyper_stage.midi import MidiManager
+from hyper_stage.midi_mapping import (
+    SWITCHES,
+    TUNING,
+    TARGETS,
+    build_mappings,
+    target_for_control,
+)
 from hyper_stage.pipeline import VideoPipeline
 from hyper_stage.pipmode import (
     CORNER_NAMES,
@@ -38,35 +46,19 @@ from hyper_stage.pipmode import (
 from hyper_stage.shaders import list_shader_files
 from hyper_stage.state import SharedState
 
-# Widget id -> (label, SharedState key). Order defines the on-screen order.
-# sw-lut and sw-sharpen are composed inside their own blocks and skipped in
-# the FEATURES loop, but stay here so Changed messages update the state.
-SWITCHES = {
-    "sw-tracking": ("Face Tracking", "tracking_enabled"),
-    "sw-cam-flip": ("Flip Camera", "cam_flip"),
-    "sw-text": ("Text Overlay", "text_enabled"),
-    "sw-lut": ("LUT Grading", "lut_enabled"),
-    "sw-shader": ("GLSL Shader", "shader_enabled"),
-    "sw-sharpen": ("Smart Sharpen", "sharpen_enabled"),
-    "sw-loop": ("Time Loop (1s)", "time_loop_enabled"),
-    "sw-magic": ("Magic Loop (AFK)", "magic_loop_enabled"),
-    "sw-fry": ("Deep Fry", "deep_fry_enabled"),
-    "sw-pip": ("PiP Slide", "pip_enabled"),
-    "sw-pip-flip": ("PiP Flip", "pip_flip"),
-}
-
-# Input suffix -> (label, SharedState key, minimum, maximum, button step).
-# Integer bounds mean an integer setting (LUT scale), floats otherwise.
-TUNING = {
-    "zoom": ("Zoom", "zoom", 1.0, 4.0, 0.05),
-    "response": ("Position Response", "position_response_time", 0.2, 3.0, 0.1),
-    "sharpen": ("Strength", "sharpen_strength", 0.0, 1.0, 0.05),
-    "lutscale": ("Scale", "lut_scale", 2, 16, 1),
-}
-
+# SWITCHES and TUNING now come from the single authoritative MIDI/TUI target
+# registry in midi_mapping.py; they are imported above and re-exported here so
+# existing imports (tests, plugins) keep working unchanged.
 AUTOSAVE_SECONDS = 5.0
 TELEMETRY_SECONDS = 0.25
 PIP_DISCOVERY_SECONDS = 2.0
+MIDI_LEARN_TIMEOUT = 15.0
+
+# Targets offered by the minimal Learn workflow. Shutdown is excluded: it is
+# opt-in configuration only and must never be assigned by a stray learn press.
+LEARN_TARGETS = tuple(
+    name for name, target in TARGETS.items() if not target.danger
+)
 
 
 def format_value(suffix, value):
@@ -93,6 +85,10 @@ class HyperStageApp(App):
     # LUT list has focus; the inputs accept numbers only.
     BINDINGS = [
         Binding("q", "shutdown", "Quit", priority=True),
+        # MIDI Learn is key-driven: no extra widgets or config GUI needed.
+        Binding("ctrl+m", "midi_learn", "MIDI Learn", priority=True),
+        Binding("ctrl+n", "midi_learn_next", show=False, priority=True),
+        Binding("ctrl+b", "midi_learn_prev", show=False, priority=True),
         Binding("t", "toggle_tracking", "Tracking", priority=True),
         Binding("c", "toggle_lut", "LUT", key_display="[c]", priority=True),
         Binding("h", "toggle_shader", "Shader", key_display="<h>", priority=True),
@@ -166,6 +162,23 @@ class HyperStageApp(App):
         self.pip_request = ""
         # Tracking state to restore when Magic Loop turns off again.
         self._tracking_before_magic = None
+        # MIDI is optional: constructing the manager never touches hardware.
+        mappings, _ = build_mappings(cfg)
+        self.midi = MidiManager(
+            cfg,
+            mappings,
+            on_event=lambda event: self.call_from_thread(self._on_midi_event, event),
+            on_status=lambda text: self.call_from_thread(self._midi_status, text),
+            on_learn=lambda captured: self.call_from_thread(
+                self._on_midi_learn, captured
+            ),
+        )
+        self._learn_index = 0
+        self._learn_replace_armed = False
+        self._learn_timer = None
+        self._shutdown_armed = False
+        # Last control the *user* actually touched, as a MIDI target name.
+        self._active_midi_target = None
 
     def tuner_controls(self, suffix, values, name=None):
         """Yield an optional mini-label plus the minus/input/plus controls."""
@@ -246,28 +259,34 @@ class HyperStageApp(App):
             yield from self.switch_row(
                 "LUT Grading", "sw-lut", values, tuner="lutscale"
             )
-            yield Select(
-                self.lut_options(),
-                value=selected,
-                prompt="LUT .cube",
-                allow_blank=True,
-                compact=True,
-                type_to_search=False,
-                id="lut-select",
-            )
+            with Horizontal(classes="row"):
+                yield Select(
+                    self.lut_options(),
+                    value=selected,
+                    prompt="LUT .cube",
+                    allow_blank=True,
+                    compact=True,
+                    type_to_search=False,
+                    id="lut-select",
+                )
+                yield Button("[", id="btn-lut-prev")
+                yield Button("]", id="btn-lut-next")
             shader_selected = values["shader_file"]
             if shader_selected not in self.shader_files:
                 shader_selected = Select.NULL
             yield from self.switch_row("GLSL Shader", "sw-shader", values)
-            yield Select(
-                [(os.path.basename(p), p) for p in self.shader_files],
-                value=shader_selected,
-                prompt="shader .glsl",
-                allow_blank=True,
-                compact=True,
-                type_to_search=False,
-                id="shader-select",
-            )
+            with Horizontal(classes="row"):
+                yield Select(
+                    [(os.path.basename(p), p) for p in self.shader_files],
+                    value=shader_selected,
+                    prompt="shader .glsl",
+                    allow_blank=True,
+                    compact=True,
+                    type_to_search=False,
+                    id="shader-select",
+                )
+                yield Button("<", id="btn-shader-prev")
+                yield Button(">", id="btn-shader-next")
             yield from self.switch_row(
                 "Smart Sharpen", "sw-sharpen", values, tuner="sharpen"
             )
@@ -296,12 +315,16 @@ class HyperStageApp(App):
                     type_to_search=False,
                     id="pip-select",
                 )
+                yield Button("-", id="btn-pip-prev")
+                yield Button("+", id="btn-pip-next")
                 yield Button("Pick", id="btn-pip-pick")
-                yield Label("- + 1-0", classes="tuner-name hint-gap")
+                yield Label("1-0", classes="tuner-name hint-gap")
         yield Footer()
 
     def on_mount(self) -> None:
         self.pipeline.start()
+        if self.cfg.get("midi_enabled"):
+            self.start_midi()
         self.set_interval(TELEMETRY_SECONDS, self.refresh_telemetry)
         self.set_interval(AUTOSAVE_SECONDS, self.autosave)
         # Dropped image files appear in the PiP dropdown without a manual rescan.
@@ -331,6 +354,8 @@ class HyperStageApp(App):
             self.bake_pip_image(current)
 
     def on_unmount(self) -> None:
+        self.midi.stop(notify=False)
+        self._cancel_learn_timer()
         self.save_if_dirty()
         self.pipeline.stop()
         # join() refuses an unstarted thread: if compose or on_mount failed
@@ -417,6 +442,208 @@ class HyperStageApp(App):
         self.save_if_dirty()
         self.exit()
 
+    # --- MIDI integration ------------------------------------------------
+
+    @work(thread=True)
+    def start_midi(self) -> None:
+        """Connect on a worker thread; a missing backend only sets a notice."""
+        self.midi.start()
+
+    def _midi_status(self, text: str) -> None:
+        self.set_notice(f"MIDI: {text}")
+
+    @staticmethod
+    def _set_widget_value(widget, value, attribute="value") -> None:
+        """Assign a widget value, marking the change as app-originated.
+
+        Textual delivers Changed messages asynchronously, so a try/finally
+        guard cannot tell a programmatic update from a user click. A counter on
+        the widget is consumed by the matching interaction handler.
+        """
+        if getattr(widget, attribute) == value:
+            return
+        marker = "_hs_programmatic"
+        setattr(widget, marker, getattr(widget, marker, 0) + 1)
+        setattr(widget, attribute, value)
+
+    def set_switch_value(self, widget_id, value) -> None:
+        self._set_widget_value(self.query_one(f"#{widget_id}", Switch), value)
+
+    def set_select_value(self, widget_id, value) -> None:
+        self._set_widget_value(self.query_one(f"#{widget_id}", Select), value)
+
+    def set_input_value(self, widget_id, value) -> None:
+        self._set_widget_value(self.query_one(f"#{widget_id}", Input), value)
+
+    def note_user_interaction(self, widget) -> None:
+        """Remember the last user-touched control that is MIDI-mappable.
+
+        Only real Textual event handlers call this; app-originated widget
+        updates are marked with a counter that is consumed here and ignored.
+        """
+        marker = "_hs_programmatic"
+        pending = getattr(widget, marker, 0)
+        if pending:
+            setattr(widget, marker, pending - 1)
+            return
+        target = target_for_control(widget.id if widget is not None else None)
+        if target is not None and target in LEARN_TARGETS:
+            self._active_midi_target = target
+
+    def _on_midi_event(self, event) -> None:
+        """MIDI-originated changes never change the Learn target context."""
+        self._apply_midi_event(event)
+
+    def _apply_midi_event(self, event) -> None:
+        """Apply a decoded MIDI event through the existing app actions."""
+        if not self.is_mounted or event.target not in TARGETS:
+            return
+        target, op = event.target, event.op
+        if op == "toggle":
+            # Tracking has its own guard so Magic Loop cannot be overridden.
+            if target == "tracking_enabled":
+                self.action_toggle_tracking(programmatic=True)
+            else:
+                self.flip_switch(TARGETS[target].widget_id, programmatic=True)
+            return
+        if op == "set_bool":
+            if target == "tracking_enabled" and self.state.snapshot()[
+                "magic_loop_enabled"
+            ]:
+                self.set_notice("tracking is frozen while Magic Loop is on")
+                return
+            self.set_switch_value(TARGETS[target].widget_id, bool(event.value))
+            return
+        if op in ("set_value", "step"):
+            spec = TARGETS[target]
+            if op == "set_value":
+                value = spec.low + float(event.value) * (spec.high - spec.low)
+            else:
+                value = self.get_tuning(spec.suffix) + float(event.value)
+            self.apply_tuning(spec.suffix, value)
+            return
+        if op == "select_index":
+            files = self.pip_folder_files()
+            if files:
+                index = max(0, min(len(files) - 1, int(float(event.value) * len(files))))
+                self.apply_pip_image(files[index])
+            return
+        if op == "trigger":
+            self._midi_trigger(target, event.value)
+
+    def _midi_trigger(self, target: str, direction) -> None:
+        """Route one-shot MIDI actions to the same code the keys use."""
+        if target.startswith("lut_"):
+            step = -1 if direction == -1 else (1 if target == "lut_next" else -1)
+            self.cycle_lut(step)
+        elif target.startswith("shader_"):
+            step = -1 if direction == -1 else (1 if target == "shader_next" else -1)
+            self.cycle_shader(step)
+        elif target in ("pip_next", "pip_prev"):
+            step = -1 if (direction == -1 or target == "pip_prev") else 1
+            self.cycle_pip_image(step)
+        elif target.startswith("pip_corner_"):
+            self.set_pip_corner(TARGETS[target].args[0])
+        elif target == "reload_files":
+            self.action_reload_files()
+            self.midi.send_pulse("reload_files")
+        elif target == "pip_pick":
+            self.action_pick_pip_image()
+        elif target == "shutdown":
+            self._arm_midi_shutdown()
+
+    def _arm_midi_shutdown(self) -> None:
+        """Require a second, deliberate press before quitting from MIDI."""
+        if self._shutdown_armed:
+            self.action_shutdown()
+            return
+        self._shutdown_armed = True
+        self.set_notice("MIDI quit armed - press again within 3s")
+        self.set_timer(3.0, self._disarm_midi_shutdown)
+
+    def _disarm_midi_shutdown(self) -> None:
+        self._shutdown_armed = False
+
+    # --- MIDI Learn ------------------------------------------------------
+
+    def action_midi_learn(self) -> None:
+        """Learn into the last user-touched control, not a hardcoded default."""
+        if self.midi.learning:
+            self.midi.cancel_learn()
+            self._cancel_learn_timer()
+            self._learn_replace_armed = False
+            self.set_notice("MIDI LEARN → cancelled")
+            return
+        if not self._active_midi_target:
+            self.set_notice("MIDI LEARN → select a TUI control first, then Ctrl+M")
+            return
+        self._learn_index = LEARN_TARGETS.index(self._active_midi_target)
+        self._learn_replace_armed = False
+        self.midi.start_learn()
+        self._learn_timer = self.set_timer(MIDI_LEARN_TIMEOUT, self._midi_learn_timeout)
+        self._show_learn_notice()
+
+    def action_midi_learn_next(self) -> None:
+        if self.midi.learning:
+            self._learn_index = (self._learn_index + 1) % len(LEARN_TARGETS)
+            self._learn_replace_armed = False
+            self._show_learn_notice()
+
+    def action_midi_learn_prev(self) -> None:
+        if self.midi.learning:
+            self._learn_index = (self._learn_index - 1) % len(LEARN_TARGETS)
+            self._learn_replace_armed = False
+            self._show_learn_notice()
+
+    def _learn_text(self, captured=None) -> str:
+        label = TARGETS[LEARN_TARGETS[self._learn_index]].label
+        text = f"MIDI LEARN → {label}"
+        if captured is not None:
+            text += f" → {captured.type.upper()} {captured.number} CH {captured.channel}"
+        return text
+
+    def _show_learn_notice(self, captured=None) -> None:
+        text = self._learn_text(captured)
+        if captured is None:
+            text += " (Ctrl+M cancels, Ctrl+N/B change target)"
+        self.set_notice(text)
+
+    def _cancel_learn_timer(self) -> None:
+        if self._learn_timer is not None:
+            self._learn_timer.stop()
+            self._learn_timer = None
+
+    def _midi_learn_timeout(self) -> None:
+        if self.midi.learning:
+            self.midi.cancel_learn()
+            self.set_notice("MIDI learn: timed out")
+
+    def _on_midi_learn(self, captured) -> None:
+        """Assign a captured control to the selected target and persist it."""
+        self._cancel_learn_timer()
+        self.midi.cancel_learn()
+        target = LEARN_TARGETS[self._learn_index]
+        spec = self.midi.router.learn_mapping(captured, target)
+        existing = self.cfg.setdefault("midi_mappings", {}).get(target)
+        if existing and existing != spec and not self._learn_replace_armed:
+            # Explicit replacement only: a second capture is the confirmation.
+            self._learn_replace_armed = True
+            self.midi.start_learn()
+            self._learn_timer = self.set_timer(
+                MIDI_LEARN_TIMEOUT, self._midi_learn_timeout
+            )
+            self.set_notice(self._learn_text(captured) + " - capture again to replace")
+            return
+        self.cfg.setdefault("midi_mappings", {})[target] = spec
+        mappings, _ = build_mappings(self.cfg)
+        self.midi.set_mappings(mappings)
+        self._learn_replace_armed = False
+        try:
+            save_config(self.config_path, self.state.config(self.cfg))
+            self.set_notice(self._learn_text(captured))
+        except OSError as exc:
+            self.set_notice(f"MIDI learn save failed: {exc}")
+
     # --- switches and shortcuts -----------------------------------------
 
     def set_tuning_disabled(self, suffix: str, disabled: bool) -> None:
@@ -437,6 +664,7 @@ class HyperStageApp(App):
         self.set_tuning_disabled("sharpen", not bool(values["sharpen_enabled"]))
 
     def on_switch_changed(self, event: Switch.Changed) -> None:
+        self.note_user_interaction(event.switch)
         spec = SWITCHES.get(event.switch.id or "")
         if spec is None:
             return
@@ -444,6 +672,7 @@ class HyperStageApp(App):
         if key == "magic_loop_enabled":
             self.sync_magic_tracking(event.switch.value)
         self.state.update(**{key: event.switch.value})
+        self.midi.send_state(key, event.switch.value)
         self.sync_dependent_controls()
         self.set_notice(f"{label}: {'on' if event.switch.value else 'off'}")
 
@@ -464,7 +693,9 @@ class HyperStageApp(App):
             # went on, the crop would already start easing back to the base
             # framing and the frozen crop would not match the history.
             self.state.update(tracking_enabled=False, magic_loop_enabled=True)
-            switch.value = False
+            self.midi.send_state("tracking_enabled", False)
+            self.midi.send_state("magic_loop_enabled", True)
+            self.set_switch_value("sw-tracking", False)
             switch.disabled = True
         else:
             previous = self._tracking_before_magic
@@ -472,19 +703,24 @@ class HyperStageApp(App):
             switch.disabled = False
             if previous is not None:
                 # Setting the same value fires no Changed message.
-                switch.value = previous
+                self.set_switch_value("sw-tracking", previous)
             self.state.update(tracking_enabled=bool(switch.value))
+            self.midi.send_state("tracking_enabled", bool(switch.value))
 
-    def flip_switch(self, widget_id: str) -> None:
+    def flip_switch(self, widget_id: str, programmatic: bool = False) -> None:
         """Toggle a switch; its Changed message updates the shared state."""
         switch = self.query_one(f"#{widget_id}", Switch)
-        switch.value = not switch.value
+        value = not switch.value
+        if programmatic:
+            self._set_widget_value(switch, value)
+        else:
+            switch.value = value
 
-    def action_toggle_tracking(self) -> None:
+    def action_toggle_tracking(self, programmatic: bool = False) -> None:
         if self.state.snapshot()["magic_loop_enabled"]:
             self.set_notice("tracking is frozen while Magic Loop is on")
             return
-        self.flip_switch("sw-tracking")
+        self.flip_switch("sw-tracking", programmatic=programmatic)
 
     def action_toggle_lut(self) -> None:
         self.flip_switch("sw-lut")
@@ -500,22 +736,25 @@ class HyperStageApp(App):
         self.pip_files = list_pip_files(values["pip_image"])
         lut = self.query_one("#lut-select", Select)
         lut.set_options([(os.path.basename(p), p) for p in self.lut_files])
-        lut.value = (
-            values["lut_file"] if values["lut_file"] in self.lut_files else Select.NULL
+        self.set_select_value(
+            "lut-select",
+            values["lut_file"] if values["lut_file"] in self.lut_files else Select.NULL,
         )
         shader = self.query_one("#shader-select", Select)
         shader.set_options([(os.path.basename(p), p) for p in self.shader_files])
-        shader.value = (
+        self.set_select_value(
+            "shader-select",
             values["shader_file"]
             if values["shader_file"] in self.shader_files
-            else Select.NULL
+            else Select.NULL,
         )
         pip = self.query_one("#pip-select", Select)
         pip.set_options(self.pip_options())
-        pip.value = (
+        self.set_select_value(
+            "pip-select",
             values["pip_image"]
             if values["pip_image"] in self.pip_files
-            else Select.NULL
+            else Select.NULL,
         )
         if values["lut_file"]:
             self.lut_request = values["lut_file"]
@@ -563,7 +802,19 @@ class HyperStageApp(App):
             x_right = 1 if value else 0
         corner = x_right + 2 * y_bottom
         self.state.update(pip_corner=corner)
+        self.midi.send_pulse(
+            ("pip_corner_tl", "pip_corner_tr", "pip_corner_bl", "pip_corner_br")[corner]
+        )
         self.set_notice(f"PiP position: {CORNER_NAMES[corner]}")
+
+    def set_pip_corner(self, corner: int) -> None:
+        """Jump to an absolute PiP corner via the existing axis-snap action."""
+        current = int(self.state.snapshot()["pip_corner"])
+        wanted_x, wanted_y = corner & 1, corner >> 1
+        if wanted_x != current & 1:
+            self.action_snap_corner(0, wanted_x)
+        if wanted_y != current >> 1:
+            self.action_snap_corner(1, wanted_y)
 
     @work(thread=True)
     def action_pick_pip_image(self) -> None:
@@ -624,12 +875,13 @@ class HyperStageApp(App):
         path = os.path.abspath(path)
         self.pip_request = path
         self.state.update(pip_image=path)
+        self.midi.send_pulse("pip_next")
         if path not in self.pip_files:
             # A picked file outside the app directory still becomes an option.
             self.pip_files.append(path)
             self.pip_files.sort()
             self.query_one("#pip-select", Select).set_options(self.pip_options())
-        self.query_one("#pip-select", Select).value = path
+        self.set_select_value("pip-select", path)
         self.set_notice(f"PiP image: {os.path.basename(path)}")
         self.bake_pip_image(path)
 
@@ -668,7 +920,9 @@ class HyperStageApp(App):
         self.pip_files = files
         select = self.query_one("#pip-select", Select)
         select.set_options(self.pip_options())
-        select.value = current if current in files else Select.NULL
+        self.set_select_value(
+            "pip-select", current if current in files else Select.NULL
+        )
         self.set_notice("found new PiP images")
 
     # --- LUT selection ---------------------------------------------------
@@ -691,7 +945,8 @@ class HyperStageApp(App):
             return
         self.lut_request = path
         self.state.update(lut_file=path)
-        self.query_one("#lut-select", Select).value = path
+        self.midi.send_pulse("lut_next")
+        self.set_select_value("lut-select", path)
         self.set_notice(f"LUT: {os.path.basename(path)}")
         self.bake_lut(path)
 
@@ -720,7 +975,8 @@ class HyperStageApp(App):
         if path == current and current:
             return
         self.state.update(shader_file=path)
-        self.query_one("#shader-select", Select).value = path
+        self.midi.send_pulse("shader_next")
+        self.set_select_value("shader-select", path)
         self.set_notice(f"shader: {os.path.basename(path)}")
 
     def action_next_shader(self) -> None:
@@ -731,6 +987,7 @@ class HyperStageApp(App):
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """Bake the chosen .cube file, or drop grading on a blank selection."""
+        self.note_user_interaction(event.select)
         # A blank selection delivers the Select.NULL sentinel, not "".
         value = event.value if isinstance(event.value, str) else ""
         if event.select.id == "pip-select":
@@ -785,13 +1042,27 @@ class HyperStageApp(App):
         label, key, _, _, _ = TUNING[suffix]
         value = clamp_value(suffix, value)
         self.state.update(**{key: value})
-        self.query_one(f"#in-{suffix}", Input).value = format_value(suffix, value)
+        self.midi.send_state(key, value)
+        self.set_input_value(f"in-{suffix}", format_value(suffix, value))
         self.set_notice(f"{label}: {format_value(suffix, value)}")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id or ""
+        self.note_user_interaction(event.button)
         if button_id == "btn-pip-pick":
             self.action_pick_pip_image()
+            return
+        if button_id == "btn-pip-prev":
+            self.cycle_pip_image(-1)
+            return
+        if button_id == "btn-pip-next":
+            self.cycle_pip_image(1)
+            return
+        if button_id in ("btn-lut-prev", "btn-lut-next"):
+            self.cycle_lut(1 if button_id == "btn-lut-next" else -1)
+            return
+        if button_id in ("btn-shader-prev", "btn-shader-next"):
+            self.cycle_shader(1 if button_id == "btn-shader-next" else -1)
             return
         for prefix, direction in (("dec-", -1), ("inc-", 1)):
             if not button_id.startswith(prefix):
@@ -816,13 +1087,14 @@ class HyperStageApp(App):
         self.query_one("#text-input", Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.note_user_interaction(event.input)
         if event.input.id == "text-input":
             text = event.value.strip()
             self.state.update(text_string=text)
             # Publishing a line implies showing it: turn the overlay on.
             switch = self.query_one("#sw-text", Switch)
             if not switch.value:
-                switch.value = True
+                self.set_switch_value("sw-text", True)
                 self.state.update(text_enabled=True)
             self.set_notice(f"text overlay: {text or 'cleared'}")
             event.input.blur()

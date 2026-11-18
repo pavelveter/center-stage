@@ -4,6 +4,8 @@ import configparser
 import os
 import tempfile
 
+from hyper_stage.midi_mapping import parse_specs
+
 
 # Defaults used when the INI file omits a key or no config is found. Keeping
 # them in one dict makes config loading and CLI overrides uniform: every value
@@ -61,7 +63,58 @@ DEFAULTS = {
     "pip_animation": 3.0,       # PiP on/off zoom duration in seconds (0 = instant)
     "pip_corner": 0,            # default webcam corner: 0 TL, 1 TR, 2 BL, 3 BR
     "theme": "textual-dark",    # Textual TUI theme (change via the command palette)
+    # MIDI integration. Disabled by default: no hardware required to launch.
+    "midi_enabled": False,
+    "midi_input_device": "",    # empty = auto-select the first available input
+    "midi_output_device": "",   # empty = auto-select the first available output
+    "midi_channel": 1,          # 1-16, or 0 = listen/send on all channels
+    "midi_feedback": True,      # send LED/value updates back to the controller
+    "midi_auto_reconnect": True,
+    "midi_feedback_interval": 20,  # minimum ms between repeated feedback messages
+    # Refractory window for buttons: filters contact bounce / repeated presses.
+    "midi_button_debounce": 80,
 }
+
+# Illustrative, complete default mapping. Only active when midi_enabled = true.
+# Keys not listed here can be mapped by hand or through MIDI Learn.
+MIDI_MAPPINGS = {
+    "tracking_enabled": "cc:1:20:toggle",
+    "cam_flip": "cc:1:21:toggle",
+    "text_enabled": "cc:1:22:toggle",
+    "lut_enabled": "cc:1:23:toggle",
+    "shader_enabled": "cc:1:24:toggle",
+    "sharpen_enabled": "cc:1:25:toggle",
+    "time_loop_enabled": "cc:1:26:toggle",
+    "magic_loop_enabled": "cc:1:27:toggle",
+    "deep_fry_enabled": "cc:1:28:toggle",
+    "pip_enabled": "cc:1:29:toggle",
+    "pip_flip": "cc:1:30:toggle",
+    "zoom": "cc:1:10:absolute",
+    "position_response_time": "cc:1:11:absolute",
+    "sharpen_strength": "cc:1:12:absolute",
+    "lut_scale": "cc:1:13:absolute",
+    "lut_next": "note:1:60:trigger",
+    "lut_prev": "note:1:61:trigger",
+    "shader_next": "note:1:62:trigger",
+    "shader_prev": "note:1:63:trigger",
+    "pip_next": "note:1:64:trigger",
+    "pip_prev": "note:1:65:trigger",
+    "reload_files": "note:1:66:trigger",
+}
+
+# The reserved scalar keys of [midi]; every other option in that section is a
+# target -> mapping string. This keeps mappings plain INI entries, never JSON.
+MIDI_SCALAR_KEYS = {
+    "enabled": "midi_enabled",
+    "input_device": "midi_input_device",
+    "output_device": "midi_output_device",
+    "channel": "midi_channel",
+    "feedback": "midi_feedback",
+    "auto_reconnect": "midi_auto_reconnect",
+    "feedback_interval": "midi_feedback_interval",
+    "button_debounce": "midi_button_debounce",
+}
+DEFAULTS["midi_mappings"] = dict(MIDI_MAPPINGS)
 
 # Maps INI sections/keys (human-facing) to config keys (code-facing). Both
 # load_config and save_config use this single table, so reading and writing
@@ -122,6 +175,7 @@ INI_MAP = {
         "corner": "pip_corner",
     },
     "appearance": {"theme": "theme"},
+    "midi": dict(MIDI_SCALAR_KEYS),
     "text": {
         "enabled": "text_enabled",
         "text": "text_string",
@@ -157,6 +211,12 @@ SECTION_HELP = {
     "effects": "Time Loop / Deep Fry / Magic Loop (AFK) toggles.",
     "pip": "Picture-in-Picture slide/meme background and its webcam window.",
     "appearance": "TUI theme (change it with Ctrl+P -> theme).",
+    "midi": (
+        "Optional MIDI controller. Mapping format: type:channel:number:mode "
+        "[:invert][:accel]; type=cc|note, channel=0-16 (0=inherit), "
+        "mode=absolute|toggle|momentary|trigger|next|prev|relative_twos|"
+        "relative_binary|relative_0_127. Every other key here maps a target."
+    ),
     "text": "Centered gradient caption published in the TUI text field.",
 }
 
@@ -205,6 +265,14 @@ KEY_HELP = {
     ("pip", "animation"): "Zoom transition duration in seconds when PiP toggles (0 = instant).",
     ("pip", "corner"): "Default corner: 0 TL, 1 TR, 2 BL, 3 BR; arrows move it live.",
     ("appearance", "theme"): "Textual theme name.",
+    ("midi", "enabled"): "Enable the MIDI input/output subsystem (default false).",
+    ("midi", "input_device"): "Input port name; empty = auto-select the first one.",
+    ("midi", "output_device"): "Output port name; empty = auto-select the first one.",
+    ("midi", "channel"): "MIDI channel 1-16; 0 = all channels.",
+    ("midi", "feedback"): "Send state changes back to the controller as MIDI.",
+    ("midi", "auto_reconnect"): "Reconnect when a configured port reappears.",
+    ("midi", "feedback_interval"): "Minimum milliseconds between repeated feedback messages.",
+    ("midi", "button_debounce"): "Ignore repeat button edges within this many milliseconds (0-1000).",
     ("text", "enabled"): "Draw the centered text overlay; Enter in the input turns it on.",
     ("text", "text"): "Published caption (persisted from the TUI input).",
     ("text", "font_face"): "TTF name or absolute path; 'Nothing Font C' resolves from ~/Library/Fonts.",
@@ -252,6 +320,28 @@ def load_config(path):
                         print(
                             f"warning: invalid value for {section}.{ini_key}={raw!r}; using default {default}"
                         )
+    debounce = cfg["midi_button_debounce"]
+    if not 0 <= debounce <= 1000:
+        print(
+            f"warning: invalid value for midi.button_debounce={debounce}; "
+            f"using default {DEFAULTS['midi_button_debounce']}"
+        )
+        cfg["midi_button_debounce"] = DEFAULTS["midi_button_debounce"]
+
+    # [midi] mapping keys are declarative, not a JSON blob. Any option that is
+    # not a reserved scalar is treated as a target -> mapping string and
+    # validated before it reaches the runtime.
+    cfg["midi_mappings"] = dict(MIDI_MAPPINGS)
+    if parser.has_section("midi"):
+        for ini_key, raw in parser.items("midi", raw=True):
+            if ini_key in MIDI_SCALAR_KEYS or not raw.strip():
+                continue
+            try:
+                parse_specs(ini_key, raw.strip())
+            except ValueError as exc:
+                print(f"warning: invalid MIDI mapping midi.{ini_key}={raw!r}: {exc}")
+                continue
+            cfg["midi_mappings"][ini_key] = raw.strip()
     return cfg
 
 
@@ -300,6 +390,18 @@ def save_config(path, cfg):
             if cfg_key in ("lut_file", "pip_image"):
                 value = portable_path(value, directory)
             parser.set(section, ini_key, ini_value(value))
+    # Mappings live as ordinary [midi] options. Remove stale ones (e.g. a
+    # target unmapped through Learn) before writing the current set back.
+    if parser.has_section("midi"):
+        for ini_key, _ in list(parser.items("midi", raw=True)):
+            if ini_key not in MIDI_SCALAR_KEYS:
+                parser.remove_option("midi", ini_key)
+        for target, spec in (cfg.get("midi_mappings") or {}).items():
+            try:
+                parse_specs(target, spec)
+            except ValueError:
+                continue
+            parser.set("midi", target, spec)
     for section, ini_key in LEGACY_KEYS:
         if parser.has_section(section):
             parser.remove_option(section, ini_key)
@@ -318,6 +420,11 @@ def save_config(path, cfg):
                 f.write(f"[{section}]\n")
                 for key, value in parser.items(section, raw=True):
                     help_text = KEY_HELP.get((section, key))
+                    if section == "midi" and key not in MIDI_SCALAR_KEYS:
+                        help_text = (
+                            "mapping: type:channel:number:mode[:invert][:accel]; "
+                            "separate multiple specs with |"
+                        )
                     if help_text:
                         f.write(f"; {help_text}\n")
                     f.write(f"{key} = {value}\n")

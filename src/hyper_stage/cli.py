@@ -77,6 +77,17 @@ def parse_args(argv=None):
         action="store_true",
         help="list available camera indices and exit",
     )
+    p.add_argument(
+        "--list-midi",
+        action="store_true",
+        help="list available MIDI input/output ports and exit",
+    )
+    p.add_argument(
+        "--midi",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="enable/disable the MIDI controller subsystem",
+    )
     return p.parse_args(argv)
 
 
@@ -94,6 +105,20 @@ def main(argv=None):
     # Config precedence: defaults < INI file < CLI flags.
     config_path = find_config_path(args.config)
     cfg = load_config(config_path)
+
+    # Diagnostics mode: enumerate MIDI ports without starting the pipeline.
+    if args.list_midi:
+        from hyper_stage.midi import MidiManager
+
+        devices = MidiManager(cfg, []).list_devices()
+        if devices.get("error"):
+            print(f"MIDI unavailable: {devices['error']}")
+        for kind in ("inputs", "outputs"):
+            print(f"Available MIDI {kind}:")
+            for name in devices[kind]:
+                print(f"  {name}")
+        return
+
     if args.camera is not None:
         cfg["camera_index"] = args.camera
     if args.lut is not None:
@@ -122,6 +147,8 @@ def main(argv=None):
         cfg["pip_enabled"] = args.pip
     if args.pip_image is not None:
         cfg["pip_image"] = args.pip_image
+    if args.midi is not None:
+        cfg["midi_enabled"] = args.midi
 
     base_dir = (
         os.path.dirname(os.path.abspath(config_path)) if config_path else os.getcwd()
